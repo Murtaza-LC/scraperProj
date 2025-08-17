@@ -1,0 +1,25 @@
+[build]
+# No static build step; we only publish the root where index.html lives
+publish = "."
+
+# Ensure Python deps are available for Functions (and install Chromium for Playwright)
+# Netlify will run this in the Functions build image.
+# If your account uses newer “bundled functions”, keep this simple;
+# otherwise, this ensures playwright has a browser.
+command = """
+pip install -r requirements.txt
+python -m playwright install chromium
+"""
+
+[functions]
+directory = "netlify/functions"
+# Increase timeouts for Playwright
+node_bundler = "esbuild"
+# 26–30 seconds default timeout may be small for scraping;
+# enable background functions if needed, but try this first:
+timeout = 26
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
