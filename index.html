@@ -233,53 +233,77 @@ function sortBy(mode){
   renderLists();
   computeMatches();
 }
-function normalizeInputUrl(u) {
-  if (!u) return "";
-  u = u.trim();
-  if (!u) return "";
-  // Add https:// if user pasted without scheme
-  if (!/^https?:\/\//i.test(u)) u = "https://" + u.replace(/^\/+/, "");
+// Safer normalizer: accepts raw text and (optionally) expected platform to sanity check host.
+// Returns a fully-qualified https URL string or null.
+function normalizeInputUrl(raw, platform) {
+  if (!raw) return null;
+  let s = String(raw).trim();
+  if (!s) return null;
+
+  // If missing scheme, try add https://
+  if (!/^https?:\/\//i.test(s)) {
+    s = 'https://' + s.replace(/^\/+/, '');
+  }
+
+  // Try to construct with no throwing
   try {
-    // Validate and rebuild to ensure no stray whitespace
-    const url = new URL(u);
-    // Important: keep '+' literally in search, don’t let it become space.
-    // URLSearchParams encodes '+' to '%2B' which is fine for Amazon/Flipkart.
-    // Rebuild query to be safe:
-    if (url.search) {
-      const params = new URLSearchParams(url.search);
-      url.search = "?" + params.toString();
-    }
-    return url.toString();
+    const u = new URL(s); // absolute now
+    const host = u.host.toLowerCase();
+    if (platform === 'amazon' && !host.includes('amazon.')) return null;
+    if (platform === 'flipkart' && !host.includes('flipkart.com')) return null;
+    return u.toString();
   } catch {
-    return "";
+    return null;
   }
 }
 
-async function run(){
-  let amazon = normalizeInputUrl($('#amazonUrl').value);
-  let flip   = normalizeInputUrl($('#flipkartUrl').value);
-  if(!amazon && !flip){
+async function run() {
+  const amazon = normalizeInputUrl(document.querySelector('#amazonUrl')?.value, 'amazon');
+  const flip   = normalizeInputUrl(document.querySelector('#flipkartUrl')?.value, 'flipkart');
+
+  if (!amazon && !flip) {
     alert('Enter at least one valid listing URL (Amazon or Flipkart).');
     return;
   }
-  $('#run').disabled = true; $('#run').textContent = 'Scraping...';
-  try{
-    const qs = new URLSearchParams({
-      amazon_url: amazon || '',
-      flipkart_url: flip || '',
-      max_pages: $('#maxPages').value,
-      pdp_prices: $('#pdp').checked ? '1' : '0'
-    });
-    const res = await fetch(`/.netlify/functions/scrape?${qs.toString()}`);
-    const json = await res.json();
-    if(!json.ok) throw new Error(json.error || 'Unknown error');
-    rows = json.rows || [];
-    filtered = rows.slice();
-    applySearchAndSort();
-  }catch(err){
-    alert('Scrape failed: ' + err.message);
-  }finally{
-    $('#run').disabled = false; $('#run').textContent = 'Scrape';
+
+  const btn = document.querySelector('#run');
+  btn.disabled = true; btn.textContent = 'Scraping...';
+
+  try {
+    // Build the function URL SAFELY with a base
+    const fnUrl = new URL('/.netlify/functions/scrape', window.location.origin);
+    if (amazon)  fnUrl.searchParams.set('amazon_url', amazon);
+    if (flip)    fnUrl.searchParams.set('flipkart_url', flip);
+
+    const maxPages = (document.querySelector('#maxPages')?.value || '1').trim();
+    if (maxPages) fnUrl.searchParams.set('max_pages', String(Math.max(1, Math.min(3, parseInt(maxPages, 10) || 1))));
+
+    const pdpChecked = !!document.querySelector('#pdp')?.checked;
+    if (pdpChecked) fnUrl.searchParams.set('pdp_prices', '1'); // only send when enabled
+
+    // Optional: show the exact URL being called for debugging
+    console.log('Calling:', fnUrl.toString());
+
+    const res = await fetch(fnUrl.toString(), { method: 'GET' });
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || data.ok === false) {
+      const msg = (data && (data.error || data.message)) || `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+
+    // Expect { ok:true, rows:[...] }
+    window.rows = data.rows || [];
+    window.filtered = window.rows.slice();
+    // Your existing renderer/sorter:
+    if (typeof applySearchAndSort === 'function') {
+      applySearchAndSort();
+    }
+  } catch (err) {
+    console.error('Scrape failed:', err);
+    alert('Scrape failed: ' + (err?.message || err));
+  } finally {
+    btn.disabled = false; btn.textContent = 'Scrape';
   }
 }
 
