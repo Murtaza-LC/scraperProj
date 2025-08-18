@@ -1,24 +1,23 @@
 // netlify/functions/scrape.js — CommonJS, puppeteer-core + @sparticuz/chromium
-
 const chromium = require("@sparticuz/chromium");
 const puppeteer = require("puppeteer-core");
 
-/* ---------------- Config ---------------- */
+/* ---------------- Config (base) ---------------- */
 const UA_LIST = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 ];
 
-const OPTS = {
-  timeoutMs: 65000,
+const BASE_OPTS = {
+  timeoutMs: 25000,   // per page wait
   minWaitMs: 900,
   maxWaitMs: 2200,
   scrollSteps: 8,
   scrollPauseMs: 650
 };
 
-/* ---------------- Utils ---------------- */
+/* ---------------- Small helpers ---------------- */
 const resp = (code, body) => ({
   statusCode: code,
   headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" },
@@ -27,6 +26,7 @@ const resp = (code, body) => ({
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randWait = (min, max) => sleep(Math.floor(Math.random() * (max - min + 1)) + min);
+const timeLeft = (deadline) => Math.max(0, deadline - Date.now());
 
 const money = (t) => {
   if (!t) return null;
@@ -46,38 +46,29 @@ const brandGuess = (name) => {
     if ([
       "samsung","apple","xiaomi","oneplus","realme","vivo","oppo","iqoo",
       "motorola","tecno","infinix","lava","nokia","honor","google","acer","poco"
-    ].includes(t)) {
-      return t.charAt(0).toUpperCase() + t.slice(1);
-    }
+    ].includes(t)) return t.charAt(0).toUpperCase() + t.slice(1);
   }
   return null;
 };
 
 const pageWithParam = (url, n) => (n <= 1 ? url : `${url}${url.includes("?") ? "&" : "?"}page=${n}`);
 
-async function autoScroll(page, steps = 8, pause = 650) {
+async function autoScroll(page, steps, pause) {
   for (let i = 0; i < steps; i++) {
     await page.evaluate(() => window.scrollBy(0, document.body.scrollHeight));
     await sleep(pause);
   }
 }
 
-async function gotoWithRetries(page, url, readySel) {
-  for (let attempt = 0; attempt < 3; attempt++) {
+async function gotoWithRetries(page, url, readySel, timeoutMs) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await page.setRequestInterception(true);
-      page.removeAllListeners("request");
-      page.on("request", (req) => {
-        const t = req.resourceType();
-        if (t === "image" || t === "media" || t === "font") return req.abort();
-        req.continue();
-      });
-      await page.goto(url, { timeout: OPTS.timeoutMs, waitUntil: "domcontentloaded" });
-      await page.waitForSelector(readySel, { timeout: OPTS.timeoutMs });
+      await page.goto(url, { timeout: timeoutMs, waitUntil: "domcontentloaded" });
+      await page.waitForSelector(readySel, { timeout: timeoutMs });
       return true;
     } catch {
-      if (attempt === 2) return false;
-      await sleep(1500 * (attempt + 1));
+      if (attempt === 1) return false;
+      await sleep(800);
     }
   }
   return false;
@@ -85,7 +76,7 @@ async function gotoWithRetries(page, url, readySel) {
 
 const normalizeUrl = (u) => {
   if (!u) return null;
-  u = u.trim();
+  u = String(u).trim();
   if (!u) return null;
   if (!/^https?:\/\//i.test(u)) u = "https://" + u.replace(/^\/+/, "");
   try { new URL(u); return u; } catch { return null; }
@@ -99,10 +90,10 @@ const ensureAllowed = (u, platform) => {
   return u;
 };
 
-/* ---------------- Amazon list ---------------- */
-async function extractAmazonList(page, sourceUrl, listOffset = 0) {
+/* ---------------- Extractors ---------------- */
+async function extractAmazonList(page, sourceUrl, listOffset, localOpts, limit = 20) {
   const out = [];
-  try { await page.waitForSelector("div.s-main-slot", { timeout: OPTS.timeoutMs }); } catch { return [out, listOffset]; }
+  try { await page.waitForSelector("div.s-main-slot", { timeout: localOpts.timeoutMs }); } catch { return [out, listOffset]; }
   const cards = await page.$$("div.s-main-slot div.s-result-item[data-component-type='s-search-result']");
   let pos = listOffset;
 
@@ -129,8 +120,8 @@ async function extractAmazonList(page, sourceUrl, listOffset = 0) {
       const mrpEl = await c.$("span.a-text-price span.a-offscreen");
       const mrp = money(mrpEl ? await page.evaluate(el => el.textContent, mrpEl) : null);
 
-      pos++;
       if (name || price || product_url) {
+        pos++;
         out.push({
           date: new Date().toISOString().slice(0, 10),
           timestamp: new Date().toISOString(),
@@ -142,26 +133,29 @@ async function extractAmazonList(page, sourceUrl, listOffset = 0) {
           rating: null, review_count: null,
           product_url, image_url, source_url: sourceUrl
         });
+        if (out.length >= limit) break;
       }
-    } catch {}
+    } catch { /* ignore card errors */ }
   }
   return [out, pos];
 }
 
-/* ---------------- Flipkart list ---------------- */
 async function closeFlipkartPopups(page) {
   try { const btn = await page.$("button._2KpZ6l._2doB4z"); if (btn) await btn.click(); } catch {}
   try { await page.keyboard.press("Escape"); } catch {}
 }
+
 function flipkartRupees(text) {
   const vals = [...String(text || "").matchAll(/₹\s*([\d,]+\.?\d*)/g)].map(m => Number(m[1].replace(/,/g, "")));
   return [...new Set(vals)].sort((a, b) => b - a);
 }
-async function extractFlipkartList(page, sourceUrl, listOffset = 0) {
+
+async function extractFlipkartList(page, sourceUrl, listOffset, localOpts, limit = 20) {
   const out = [];
   await closeFlipkartPopups(page);
-  await sleep(800);
-  await autoScroll(page, OPTS.scrollSteps, OPTS.scrollPauseMs);
+  await sleep(300);
+  await autoScroll(page, localOpts.scrollSteps, localOpts.scrollPauseMs);
+
   const anchors = await page.$$("a[href*='/p/']");
   const seen = new Set(); let pos = listOffset;
 
@@ -203,7 +197,8 @@ async function extractFlipkartList(page, sourceUrl, listOffset = 0) {
         }
       }
 
-      seen.add(product_url); pos++;
+      seen.add(product_url);
+      pos++;
       if ((name || price) && product_url) {
         out.push({
           date: new Date().toISOString().slice(0, 10),
@@ -216,8 +211,9 @@ async function extractFlipkartList(page, sourceUrl, listOffset = 0) {
           rating: null, review_count: null,
           product_url, image_url: null, source_url: sourceUrl
         });
+        if (out.length >= limit) break;
       }
-    } catch {}
+    } catch { /* ignore card errors */ }
   }
   return [out, pos];
 }
@@ -233,11 +229,26 @@ module.exports.handler = async function (event) {
       return resp(400, { ok: false, error: "Provide a valid Amazon and/or Flipkart listing URL (https://…)" });
     }
 
-    const maxPages = Math.max(1, Math.min(3, parseInt(params.max_pages || "1", 10)));
-    const pdpPrices = String(params.pdp_prices || "0").toLowerCase() === "1" ||
-                      ["true", "yes"].includes(String(params.pdp_prices || "").toLowerCase());
+    // Fast mode + hard deadline to avoid 504s
+    const fast = String(params.fast || "1") === "1";
+    const HARD_LIMIT_MS = 8000;                 // ~8s total budget
+    const deadline = Date.now() + HARD_LIMIT_MS;
 
-    // Launch Chromium provided by @sparticuz/chromium
+    // Local opts tuned by fast mode
+    const localOpts = {
+      timeoutMs: BASE_OPTS.timeoutMs,
+      minWaitMs: fast ? 200 : BASE_OPTS.minWaitMs,
+      maxWaitMs: fast ? 450 : BASE_OPTS.maxWaitMs,
+      scrollSteps: fast ? 3 : BASE_OPTS.scrollSteps,
+      scrollPauseMs: fast ? 250 : BASE_OPTS.scrollPauseMs
+    };
+
+    // Keep light by default
+    const maxPages = Math.max(1, Math.min(3, parseInt(params.max_pages || "1", 10)));
+    const perSiteLimit = fast ? 16 : 24;
+    const pdpPrices = false; // Off in this short function variant
+
+    // Launch Chromium (@sparticuz/chromium handles Lambda-friendly binary)
     const executablePath = await chromium.executablePath();
     const browser = await puppeteer.launch({
       args: chromium.args,
@@ -246,43 +257,52 @@ module.exports.handler = async function (event) {
       headless: chromium.headless
     });
 
-    // Use default browser context
+    // Default context, set UA/viewport
     const page = await browser.newPage();
     await page.setUserAgent(UA_LIST[0]);
     await page.setViewport({ width: 1420, height: 980 });
 
+    // Intercept heavy assets ONCE (keeps it fast)
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      const t = req.resourceType();
+      if (t === "image" || t === "media" || t === "font") return req.abort();
+      req.continue();
+    });
+
     const out = [];
 
-    // Amazon
-    if (amazonUrl) {
+    // Amazon (1 page in fast mode)
+    if (amazonUrl && timeLeft(deadline) > 1200) {
       let pos = 0;
-      for (let p = 1; p <= maxPages; p++) {
+      const pagesToDo = Math.min(maxPages, fast ? 1 : maxPages);
+      for (let p = 1; p <= pagesToDo; p++) {
+        if (timeLeft(deadline) < 1200) break;
         const url = pageWithParam(amazonUrl, p);
-        const ok = await gotoWithRetries(page, url, "div.s-main-slot");
+        const ok = await gotoWithRetries(page, url, "div.s-main-slot", localOpts.timeoutMs);
         if (!ok) continue;
-        await randWait(OPTS.minWaitMs, OPTS.maxWaitMs);
-        await autoScroll(page, OPTS.scrollSteps, OPTS.scrollPauseMs);
-        const [chunk, newPos] = await extractAmazonList(page, amazonUrl, pos);
+        await randWait(localOpts.minWaitMs, localOpts.maxWaitMs);
+        await autoScroll(page, localOpts.scrollSteps, localOpts.scrollPauseMs);
+        const [chunk, newPos] = await extractAmazonList(page, amazonUrl, pos, localOpts, perSiteLimit);
         pos = newPos; out.push(...chunk);
       }
     }
 
-    // Flipkart
-    if (flipkartUrl) {
+    // Flipkart (1 page in fast mode)
+    if (flipkartUrl && timeLeft(deadline) > 1200) {
       let pos = 0;
-      for (let p = 1; p <= maxPages; p++) {
+      const pagesToDo = Math.min(maxPages, fast ? 1 : maxPages);
+      for (let p = 1; p <= pagesToDo; p++) {
+        if (timeLeft(deadline) < 1200) break;
         const url = pageWithParam(flipkartUrl, p);
-        const ok = await gotoWithRetries(page, url, "a[href*='/p/']");
+        const ok = await gotoWithRetries(page, url, "a[href*='/p/']", localOpts.timeoutMs);
         if (!ok) continue;
-        await randWait(OPTS.minWaitMs, OPTS.maxWaitMs);
-        await autoScroll(page, OPTS.scrollSteps, OPTS.scrollPauseMs);
-        const [chunk, newPos] = await extractFlipkartList(page, flipkartUrl, pos);
+        await randWait(localOpts.minWaitMs, localOpts.maxWaitMs);
+        await autoScroll(page, localOpts.scrollSteps, localOpts.scrollPauseMs);
+        const [chunk, newPos] = await extractFlipkartList(page, flipkartUrl, pos, localOpts, perSiteLimit);
         pos = newPos; out.push(...chunk);
       }
     }
-
-    // PDP enrichment intentionally disabled by default
-    // if (pdpPrices && out.length) { ... }
 
     await browser.close();
 
@@ -294,7 +314,7 @@ module.exports.handler = async function (event) {
       seen.add(k); rows.push(r);
     }
 
-    return resp(200, { ok: true, count: rows.length, rows });
+    return resp(200, { ok: true, count: rows.length, rows, fast });
   } catch (err) {
     console.error("Function error:", err);
     return resp(500, { ok: false, error: String((err && err.message) || err) });
