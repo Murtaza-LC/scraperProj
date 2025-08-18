@@ -237,6 +237,16 @@ const ensureAllowed = (u, platform) => {
 };
 
 export async function handler(event) {
+  export async function handler(event) {
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu"
+    ]
+  });
   try{
     const params = event.queryStringParameters || {};
     const amazonUrl   = ensureAllowed(normalizeUrl(params.amazon_url), "amazon");
