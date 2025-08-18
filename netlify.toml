@@ -9,4 +9,5 @@ NODE_VERSION = "20"
 directory = "netlify/functions"
 node_bundler = "esbuild"
 
-# No included_files needed. No PLAYWRIGHT_BROWSERS_PATH needed.
+external_node_modules = ["@sparticuz/chromium", "puppeteer-core"]
+included_files = ["node_modules/@sparticuz/chromium/**"]
