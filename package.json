@@ -8,10 +8,11 @@
   "description": "",
   "keywords": [],
   "scripts": {
-    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium"
+    "postinstall": "" 
   },
   "dependencies": {
-    "playwright": "1.46.0"
+    "@sparticuz/chromium": "^126.0.0",
+    "puppeteer-core": "^22.15.0"
   },
   "devDependencies": {}
 }

@@ -1,20 +1,12 @@
 [build]
 publish = "."
-command = "PLAYWRIGHT_BROWSERS_PATH=0 npm ci && npx playwright install chromium"
+command = "npm ci"
 
 [build.environment]
 NODE_VERSION = "20"
-# (build-time env)
 
 [functions]
 directory = "netlify/functions"
 node_bundler = "esbuild"
-# Include both possible locations (your log shows playwright-core)
-included_files = [
-  "node_modules/playwright/.local-browsers/**",
-  "node_modules/playwright-core/.local-browsers/**"
-]
 
-[functions.environment]
-# CRITICAL: make Functions runtime use vendored browsers
-PLAYWRIGHT_BROWSERS_PATH = "0"
+# No included_files needed. No PLAYWRIGHT_BROWSERS_PATH needed.
