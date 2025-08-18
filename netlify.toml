@@ -1,15 +1,12 @@
 [build]
 publish = "."
-# Install deps and the Chromium browser into node_modules (vendored)
 command = "PLAYWRIGHT_BROWSERS_PATH=0 npm ci && npx playwright install chromium"
 
 [build.environment]
 NODE_VERSION = "20"
-# Redundant but safe at runtime too:
 PLAYWRIGHT_BROWSERS_PATH = "0"
 
 [functions]
 directory = "netlify/functions"
 node_bundler = "esbuild"
-# IMPORTANT: include the vendored browser in the bundle
 included_files = ["node_modules/playwright/.local-browsers/**"]
