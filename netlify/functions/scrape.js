@@ -3,7 +3,8 @@
 // package.json should NOT set "type":"module".
 
 const { chromium } = require("playwright");
-
+const fs = require("fs");
+const path = require("path");
 /* ---------------- Config ---------------- */
 const UA_LIST = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
@@ -229,6 +230,29 @@ async function extractFlipkartList(page, sourceUrl, listOffset = 0) {
   return [out, pos];
 }
 
+function findVendoredChromium() {
+  // Try playwright-core first (matches your build log)
+  const roots = [
+    path.dirname(require.resolve("playwright-core/package.json")),
+    path.dirname(require.resolve("playwright/package.json"))
+  ].filter(Boolean);
+
+  for (const root of roots) {
+    const browsersDir = path.join(root, ".local-browsers");
+    if (!fs.existsSync(browsersDir)) continue;
+
+    const entries = fs.readdirSync(browsersDir).filter(n => n.startsWith("chromium-"));
+    // Pick the highest build if multiple
+    entries.sort().reverse();
+    for (const dir of entries) {
+      // Linux path used on Netlify
+      const candidate = path.join(browsersDir, dir, "chrome-linux", "chrome");
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
 /* ---------------- Handler ---------------- */
 module.exports.handler = async function (event) {
   try {
@@ -247,13 +271,16 @@ module.exports.handler = async function (event) {
                       ["true", "yes"].includes(String(params.pdp_prices || "").toLowerCase());
 
     /* ---- Launch Chromium safely in Netlify's sandbox (vendored) ---- */
-    // Force Playwright to use the Chromium we bundled during build.
-    const execPath = chromium.executablePath();
-    
-    // Optional diagnostics to Netlify function logs (helps confirm path)
+    // Resolve executable path
+    let execPath = chromium.executablePath();
+    // If it still points to ~/.cache or is falsy, fall back to vendored search
+    if (!execPath || execPath.includes(".cache/ms-playwright")) {
+      execPath = findVendoredChromium();
+    }
+
     console.log("PLAYWRIGHT_BROWSERS_PATH =", process.env.PLAYWRIGHT_BROWSERS_PATH);
-    console.log("chromium.executablePath() =", execPath);
-    
+    console.log("Resolved Chromium execPath =", execPath);
+
     const launchOptions = {
       headless: true,
       args: [
@@ -263,14 +290,9 @@ module.exports.handler = async function (event) {
         "--disable-gpu"
       ]
     };
-    
-    // If Playwright returns a path, pin it explicitly (avoids ~/.cache fallback)
-    if (execPath) {
-      launchOptions.executablePath = execPath;
-    }
-    
+    if (execPath) launchOptions.executablePath = execPath;
+
     const browser = await chromium.launch(launchOptions);
-    
     const context = await browser.newContext({
       userAgent: UA_LIST[0],
       viewport: { width: 1420, height: 980 },
