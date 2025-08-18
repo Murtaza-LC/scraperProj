@@ -246,8 +246,15 @@ module.exports.handler = async function (event) {
     const pdpPrices = String(params.pdp_prices || "0").toLowerCase() === "1" ||
                       ["true", "yes"].includes(String(params.pdp_prices || "").toLowerCase());
 
-    /* ---- Launch Chromium safely in Netlify's sandbox ---- */
-    const browser = await chromium.launch({
+    /* ---- Launch Chromium safely in Netlify's sandbox (vendored) ---- */
+    // Force Playwright to use the Chromium we bundled during build.
+    const execPath = chromium.executablePath();
+    
+    // Optional diagnostics to Netlify function logs (helps confirm path)
+    console.log("PLAYWRIGHT_BROWSERS_PATH =", process.env.PLAYWRIGHT_BROWSERS_PATH);
+    console.log("chromium.executablePath() =", execPath);
+    
+    const launchOptions = {
       headless: true,
       args: [
         "--no-sandbox",
@@ -255,14 +262,21 @@ module.exports.handler = async function (event) {
         "--disable-dev-shm-usage",
         "--disable-gpu"
       ]
-    });
+    };
+    
+    // If Playwright returns a path, pin it explicitly (avoids ~/.cache fallback)
+    if (execPath) {
+      launchOptions.executablePath = execPath;
+    }
+    
+    const browser = await chromium.launch(launchOptions);
+    
     const context = await browser.newContext({
       userAgent: UA_LIST[0],
       viewport: { width: 1420, height: 980 },
       locale: "en-IN"
     });
     const page = await context.newPage();
-
     const out = [];
 
     // Amazon
