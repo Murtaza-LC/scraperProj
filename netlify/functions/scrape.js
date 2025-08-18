@@ -1,4 +1,5 @@
-// netlify/functions/scrape.js  — Puppeteer Core + @sparticuz/chromium (CommonJS)
+// netlify/functions/scrape.js — CommonJS, puppeteer-core + @sparticuz/chromium
+
 const chromium = require("@sparticuz/chromium");
 const puppeteer = require("puppeteer-core");
 
@@ -18,6 +19,12 @@ const OPTS = {
 };
 
 /* ---------------- Utils ---------------- */
+const resp = (code, body) => ({
+  statusCode: code,
+  headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" },
+  body: JSON.stringify(body)
+});
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randWait = (min, max) => sleep(Math.floor(Math.random() * (max - min + 1)) + min);
 
@@ -68,7 +75,7 @@ async function gotoWithRetries(page, url, readySel) {
       await page.goto(url, { timeout: OPTS.timeoutMs, waitUntil: "domcontentloaded" });
       await page.waitForSelector(readySel, { timeout: OPTS.timeoutMs });
       return true;
-    } catch (e) {
+    } catch {
       if (attempt === 2) return false;
       await sleep(1500 * (attempt + 1));
     }
@@ -92,18 +99,13 @@ const ensureAllowed = (u, platform) => {
   return u;
 };
 
-const resp = (code, body) => ({
-  statusCode: code,
-  headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" },
-  body: JSON.stringify(body)
-});
-
 /* ---------------- Amazon list ---------------- */
 async function extractAmazonList(page, sourceUrl, listOffset = 0) {
   const out = [];
   try { await page.waitForSelector("div.s-main-slot", { timeout: OPTS.timeoutMs }); } catch { return [out, listOffset]; }
   const cards = await page.$$("div.s-main-slot div.s-result-item[data-component-type='s-search-result']");
   let pos = listOffset;
+
   for (const c of cards) {
     try {
       const titleEl = await c.$("h2 a span.a-size-medium") || await c.$("h2 a span") || await c.$("h2");
@@ -162,6 +164,7 @@ async function extractFlipkartList(page, sourceUrl, listOffset = 0) {
   await autoScroll(page, OPTS.scrollSteps, OPTS.scrollPauseMs);
   const anchors = await page.$$("a[href*='/p/']");
   const seen = new Set(); let pos = listOffset;
+
   for (const a of anchors) {
     try {
       const href = await page.evaluate(el => el.getAttribute("href"), a);
@@ -235,7 +238,7 @@ module.exports.handler = async function (event) {
                       ["true", "yes"].includes(String(params.pdp_prices || "").toLowerCase());
 
     // Launch Chromium provided by @sparticuz/chromium
-    const executablePath = await chromium.executablePath(); // downloads/points to a Lambda-compatible binary
+    const executablePath = await chromium.executablePath();
     const browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
@@ -243,8 +246,8 @@ module.exports.handler = async function (event) {
       headless: chromium.headless
     });
 
-    const context = await browser.createIncognitoBrowserContext();
-    const page = await context.newPage();
+    // Use default browser context
+    const page = await browser.newPage();
     await page.setUserAgent(UA_LIST[0]);
     await page.setViewport({ width: 1420, height: 980 });
 
@@ -278,7 +281,7 @@ module.exports.handler = async function (event) {
       }
     }
 
-    // PDP enrichment intentionally disabled by default to stay within function time
+    // PDP enrichment intentionally disabled by default
     // if (pdpPrices && out.length) { ... }
 
     await browser.close();
