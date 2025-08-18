@@ -233,12 +233,35 @@ function sortBy(mode){
   renderLists();
   computeMatches();
 }
+function normalizeInputUrl(u) {
+  if (!u) return "";
+  u = u.trim();
+  if (!u) return "";
+  // Add https:// if user pasted without scheme
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u.replace(/^\/+/, "");
+  try {
+    // Validate and rebuild to ensure no stray whitespace
+    const url = new URL(u);
+    // Important: keep '+' literally in search, don’t let it become space.
+    // URLSearchParams encodes '+' to '%2B' which is fine for Amazon/Flipkart.
+    // Rebuild query to be safe:
+    if (url.search) {
+      const params = new URLSearchParams(url.search);
+      url.search = "?" + params.toString();
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
 
 async function run(){
-  const amazon = $('#amazonUrl').value.trim();
-  const flip   = $('#flipkartUrl').value.trim();
-  if(!amazon && !flip){ alert('Enter at least one listing URL.'); return; }
-
+  let amazon = normalizeInputUrl($('#amazonUrl').value);
+  let flip   = normalizeInputUrl($('#flipkartUrl').value);
+  if(!amazon && !flip){
+    alert('Enter at least one valid listing URL (Amazon or Flipkart).');
+    return;
+  }
   $('#run').disabled = true; $('#run').textContent = 'Scraping...';
   try{
     const qs = new URLSearchParams({
@@ -249,7 +272,7 @@ async function run(){
     });
     const res = await fetch(`/.netlify/functions/scrape?${qs.toString()}`);
     const json = await res.json();
-    if(!json.ok) throw new Error(json.error||'Unknown error');
+    if(!json.ok) throw new Error(json.error || 'Unknown error');
     rows = json.rows || [];
     filtered = rows.slice();
     applySearchAndSort();
