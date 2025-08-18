@@ -1,0 +1,11 @@
+{
+  "name": "market-compare",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.46.0"
+  },
+  "scripts": {
+    "postinstall": "npx playwright install chromium"
+  }
+}
