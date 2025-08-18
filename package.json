@@ -1,10 +1,17 @@
 {
   "name": "market-compare",
+  "version": "1.0.0",
   "private": true,
+  "main": "index.js",
+  "license": "ISC",
+  "author": "",
+  "description": "",
+  "keywords": [],
+  "scripts": {
+    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium"
+  },
   "dependencies": {
     "playwright": "1.46.0"
   },
-  "scripts": {
-    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium"
-  }
+  "devDependencies": {}
 }
