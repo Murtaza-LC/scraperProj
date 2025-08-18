@@ -1,13 +1,10 @@
 [build]
 publish = "."
-command = """
-export PLAYWRIGHT_BROWSERS_PATH=0
-pip install --no-cache-dir -r requirements.txt
-python -m playwright install chromium
-"""
-
-[build.environment]
-PYTHON_VERSION = "3.11"
+command = "npm ci"
 
 [functions]
 directory = "netlify/functions"
+
+[build.environment]
+# Optional: pin Node version for consistency
+NODE_VERSION = "20"
