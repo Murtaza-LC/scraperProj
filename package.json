@@ -6,7 +6,6 @@
     "playwright": "1.46.0"
   },
   "scripts": {
-    // optional if you already run install in netlify.toml
     "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium"
   }
 }
