@@ -233,21 +233,14 @@ function sortBy(mode){
   renderLists();
   computeMatches();
 }
-// Safer normalizer: accepts raw text and (optionally) expected platform to sanity check host.
-// Returns a fully-qualified https URL string or null.
+// Safer normalizer: returns https URL or null; optionally checks host by platform.
 function normalizeInputUrl(raw, platform) {
   if (!raw) return null;
   let s = String(raw).trim();
   if (!s) return null;
-
-  // If missing scheme, try add https://
-  if (!/^https?:\/\//i.test(s)) {
-    s = 'https://' + s.replace(/^\/+/, '');
-  }
-
-  // Try to construct with no throwing
+  if (!/^https?:\/\//i.test(s)) s = 'https://' + s.replace(/^\/+/, '');
   try {
-    const u = new URL(s); // absolute now
+    const u = new URL(s);
     const host = u.host.toLowerCase();
     if (platform === 'amazon' && !host.includes('amazon.')) return null;
     if (platform === 'flipkart' && !host.includes('flipkart.com')) return null;
@@ -270,19 +263,16 @@ async function run() {
   btn.disabled = true; btn.textContent = 'Scraping...';
 
   try {
-    // Build the function URL SAFELY with a base
     const fnUrl = new URL('/.netlify/functions/scrape', window.location.origin);
-    if (amazon)  fnUrl.searchParams.set('amazon_url', amazon);
-    if (flip)    fnUrl.searchParams.set('flipkart_url', flip);
+    if (amazon) fnUrl.searchParams.set('amazon_url', amazon);
+    if (flip)   fnUrl.searchParams.set('flipkart_url', flip);
 
+    // Keep requests fast to avoid 504s
+    fnUrl.searchParams.set('fast', '1');
     const maxPages = (document.querySelector('#maxPages')?.value || '1').trim();
-    if (maxPages) fnUrl.searchParams.set('max_pages', String(Math.max(1, Math.min(3, parseInt(maxPages, 10) || 1))));
-
-    const pdpChecked = !!document.querySelector('#pdp')?.checked;
-    if (pdpChecked) fnUrl.searchParams.set('pdp_prices', '1'); // only send when enabled
-
-    // Optional: show the exact URL being called for debugging
-    console.log('Calling:', fnUrl.toString());
+    fnUrl.searchParams.set('max_pages', String(Math.max(1, Math.min(3, parseInt(maxPages, 10) || 1))));
+    // PDP enrichment disabled for short runs (omit the param)
+    // If you ever enable it: fnUrl.searchParams.set('pdp_prices', '1');
 
     const res = await fetch(fnUrl.toString(), { method: 'GET' });
     const data = await res.json().catch(() => ({}));
@@ -295,7 +285,6 @@ async function run() {
     // Expect { ok:true, rows:[...] }
     window.rows = data.rows || [];
     window.filtered = window.rows.slice();
-    // Your existing renderer/sorter:
     if (typeof applySearchAndSort === 'function') {
       applySearchAndSort();
     }
