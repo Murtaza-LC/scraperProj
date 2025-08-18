@@ -1,15 +1,13 @@
 [build]
 publish = "."
-# Run a build step so Functions have deps & Chromium.
-# PLAYWRIGHT_BROWSERS_PATH=0 bundles the browser with the function.
 command = """
 export PLAYWRIGHT_BROWSERS_PATH=0
-pip install -r requirements.txt
-python -m playwright install --with-deps chromium
+pip install --no-cache-dir -r requirements.txt
+python -m playwright install chromium
 """
+
+[build.environment]
+PYTHON_VERSION = "3.11"
 
 [functions]
 directory = "netlify/functions"
-# (Optional) include extra assets if you know where Playwright put browsers.
-# If you need this later, uncomment and point to the folder:
-# included_files = ["**/*"]
