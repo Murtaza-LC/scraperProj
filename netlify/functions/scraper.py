@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
 from typing import Optional, Tuple, List
+from urllib.parse import urlparse
 
 UA_LIST = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
@@ -14,6 +15,25 @@ UA_LIST = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
 ]
 
+def normalize_url(u: str | None) -> str | None:
+    if not u: return None
+    u = u.strip()
+    if not u: return None
+    if not u.lower().startswith(("http://", "https://")):
+        u = "https://" + u.lstrip("/")
+    pu = urlparse(u)
+    if not pu.scheme or not pu.netloc:
+        return None
+    return u
+
+def ensure_allowed(u: str | None, platform: str) -> str | None:
+    if not u: return None
+    host = urlparse(u).netloc.lower()
+    if platform == "amazon" and "amazon." not in host:
+        return None
+    if platform == "flipkart" and "flipkart.com" not in host:
+        return None
+    return u
 def _rand_wait(min_ms: int, max_ms: int) -> float:
     return random.randint(min_ms, max_ms) / 1000.0
 
@@ -323,23 +343,30 @@ async def run_scrape(amazon_url: Optional[str], flipkart_url: Optional[str],
 
 # -------- Netlify handler --------
 def handler(event, context):
-    try:
+     try:
         params = event.get("queryStringParameters") or {}
-        amazon_url   = params.get("amazon_url")
-        flipkart_url = params.get("flipkart_url")
-        max_pages    = int(params.get("max_pages") or 1)
-        pdp_prices   = params.get("pdp_prices", "0") in {"1","true","True","yes"}
+        amazon_url   = ensure_allowed(normalize_url(params.get("amazon_url")), "amazon")
+        flipkart_url = ensure_allowed(normalize_url(params.get("flipkart_url")), "flipkart")
+
+        if not amazon_url and not flipkart_url:
+            return {
+                "statusCode": 400,
+                "headers": {"Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*"},
+                "body": json.dumps({"ok": False, "error": "Please provide a valid Amazon and/or Flipkart listing URL starting with https://"})
+            }
+
+        max_pages  = int(params.get("max_pages") or 1)
+        pdp_prices = params.get("pdp_prices", "0").lower() in {"1","true","yes"}
 
         data = asyncio.run(run_scrape(amazon_url, flipkart_url, max_pages, pdp_prices))
         return {
             "statusCode": 200,
-            "headers": {
-                "Content-Type": "application/json; charset=utf-8",
-                "Access-Control-Allow-Origin": "*"
-            },
+            "headers": {"Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*"},
             "body": json.dumps({"ok": True, "count": len(data), "rows": data})
         }
     except Exception as e:
+        # Log the inputs for debugging (shows up in Netlify function logs)
+        print("handler error:", repr(e), "params=", event.get("queryStringParameters"))
         return {
             "statusCode": 500,
             "headers": {"Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*"},
