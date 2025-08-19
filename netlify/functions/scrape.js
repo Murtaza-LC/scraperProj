@@ -1,6 +1,7 @@
 // netlify/functions/scrape.js
-// Serverless scraper for Amazon + Flipkart (listing pages only)
-// Runtime: Node 20 (Netlify), bundler: esbuild
+// Amazon + Flipkart listing scraper (serverless-safe)
+// - Detects Flipkart reCAPTCHA and skips it to avoid 504s
+// - Keeps work under ~9s total to avoid platform timeouts
 
 const chromium = require("@sparticuz/chromium");
 const puppeteer = require("puppeteer-core");
@@ -13,16 +14,17 @@ const UA_LIST = [
 ];
 
 const BASE_OPTS = {
-  timeoutMs: 25000,   // per-page selector wait (non-fast)
+  timeoutMs: 16000,   // selector wait (non-fast)
   minWaitMs: 900,
   maxWaitMs: 2200,
   scrollSteps: 8,
   scrollPauseMs: 650,
 };
 
-const HARD_LIMIT_MS = 18000; // total function budget (~18s)
+// Keep total execution well below provider limits
+const HARD_LIMIT_MS = 9000; // ~9s budget
 
-/* ---------------- Small helpers ---------------- */
+/* ---------------- Utilities ---------------- */
 const resp = (code, body) => ({
   statusCode: code,
   headers: {
@@ -41,7 +43,6 @@ const money = (t) => {
   const m = String(t).match(/[₹]?\s*([\d,]+\.?\d*)/);
   return m ? Number(m[1].replace(/,/g, "")) : null;
 };
-
 const pctOff = (mrp, price) =>
   mrp && price && mrp > 0 && price <= mrp ? Math.round((100 * (mrp - price) / mrp) * 10) / 10 : null;
 
@@ -88,28 +89,41 @@ const ensureAllowed = (u, platform) => {
 };
 
 /* ---------------- Navigation helper ---------------- */
-async function gotoWithRetries(page, url, readySel, timeoutMs, dbg) {
+// Returns { ok:boolean, captcha:boolean }
+async function gotoWithRetries(page, url, readySel, timeoutMs, dbg, { detectCaptchaTitle } = {}) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const t0 = Date.now();
     try {
       dbg.d(`goto attempt ${attempt + 1}`, { url });
       await page.goto(url, { timeout: timeoutMs, waitUntil: "domcontentloaded" });
+
       const title = await page.title().catch(() => "");
       const cur = page.url();
       dbg.d("after goto", { title, cur, dur_ms: Date.now() - t0 });
+
+      // Early captcha detection
+      if (detectCaptchaTitle && title && /recaptcha/i.test(title)) {
+        dbg.d("captcha detected by title", { title });
+        return { ok: false, captcha: true };
+      }
+
       dbg.d("waiting for selector", { readySel });
       await page.waitForSelector(readySel, { timeout: timeoutMs });
       dbg.d("selector appeared", { readySel, dur_ms: Date.now() - t0 });
-      const htmlLen = await page.evaluate(() => document.documentElement.outerHTML.length).catch(() => -1);
+
+      const htmlLen = await page
+        .evaluate(() => document.documentElement.outerHTML.length)
+        .catch(() => -1);
       dbg.d("html length", { htmlLen });
-      return true;
+
+      return { ok: true, captcha: false };
     } catch (e) {
       dbg.d("goto/wait error", { attempt, err: String(e) });
-      if (attempt === 1) return false;
-      await sleep(800);
+      if (attempt === 1) return { ok: false, captcha: false };
+      await sleep(500);
     }
   }
-  return false;
+  return { ok: false, captcha: false };
 }
 
 /* ---------------- Scrolling ---------------- */
@@ -128,8 +142,6 @@ async function extractAmazonList(page, sourceUrl, listOffset, localOpts, limit, 
 
   const cards = await page.$$("div.s-main-slot div.s-result-item[data-component-type='s-search-result']");
   dbg.d("amazon: cards count", { n: cards.length });
-  const slotPreview = await page.$eval("div.s-main-slot", el => (el.textContent || "").slice(0, 200)).catch(() => "");
-  dbg.d("amazon: slot preview", { text: slotPreview });
 
   let pos = listOffset;
   for (const c of cards) {
@@ -184,31 +196,24 @@ async function closeFlipkartPopups(page, dbg) {
   } catch {}
   try { await page.keyboard.press("Escape"); } catch {}
 }
-
 function flipkartRupees(text) {
   const vals = [...String(text || "").matchAll(/₹\s*([\d,]+\.?\d*)/g)].map(m => Number(m[1].replace(/,/g, "")));
   return [...new Set(vals)].sort((a, b) => b - a);
 }
-
 async function extractFlipkartList(page, sourceUrl, listOffset, localOpts, limit, dbg) {
   const out = [];
   await closeFlipkartPopups(page, dbg);
-  await sleep(300);
+  await sleep(200);
   await autoScroll(page, localOpts.scrollSteps, localOpts.scrollPauseMs);
 
   const anchors = await page.$$("a[href*='/p/']");
   dbg.d("flipkart: anchors count", { n: anchors.length });
   if (anchors.length === 0) {
-    const classes = await page.evaluate(() => Array.from(new Set(
-      Array.from(document.querySelectorAll('div')).map(d => d.className).join(' ').split(/\s+/).filter(Boolean)
-    )).slice(0, 40));
-    dbg.d("flipkart: no anchors; class sample", { classes });
+    const title = await page.title().catch(() => "");
+    dbg.d("flipkart: zero anchors, title", { title });
   }
-  const pagePreview = await page.$eval("body", el => (el.textContent || "").slice(0, 200)).catch(() => "");
-  dbg.d("flipkart: body preview", { text: pagePreview });
 
   const seen = new Set(); let pos = listOffset;
-
   for (const a of anchors) {
     try {
       const href = await page.evaluate(el => el.getAttribute("href"), a);
@@ -276,6 +281,8 @@ module.exports.handler = async function (event) {
   const shotEnabled  = String(params.debug_shot || "0") === "1";
   const DBG = makeDebugger(debugEnabled);
 
+  let captcha = { flipkart: false };
+
   try {
     const amazonUrl   = ensureAllowed(normalizeUrl(params.amazon_url), "amazon");
     const flipkartUrl = ensureAllowed(normalizeUrl(params.flipkart_url), "flipkart");
@@ -286,23 +293,22 @@ module.exports.handler = async function (event) {
       return resp(400, { ok: false, error: "Provide a valid Amazon and/or Flipkart listing URL (https://…)", debug: DBG.dump() });
     }
 
+    // Budget
     const deadline = Date.now() + HARD_LIMIT_MS;
 
-    // Fast mode settings
-    const fast = String(params.fast || "1") === "1";
+    // Fast mode always on by default here
+    const fast = true;
     const localOpts = {
-      timeoutMs: fast ? 12000 : BASE_OPTS.timeoutMs,
-      minWaitMs: fast ? 120 : BASE_OPTS.minWaitMs,
-      maxWaitMs: fast ? 300 : BASE_OPTS.maxWaitMs,
-      scrollSteps: fast ? 2 : BASE_OPTS.scrollSteps,
-      scrollPauseMs: fast ? 180 : BASE_OPTS.scrollPauseMs,
+      timeoutMs: 8000,                 // tighter waits
+      minWaitMs: 100,
+      maxWaitMs: 250,
+      scrollSteps: 2,
+      scrollPauseMs: 150,
     };
+    const maxPages = 1;                // keep lean
+    const perSiteLimit = 12;
 
-    const maxPages = Math.max(1, Math.min(3, parseInt(params.max_pages || "1", 10)));
-    const perSiteLimit = fast ? 12 : 24;
-    // PDP enrichment intentionally OFF to keep within function time
-    // const pdpPrices = false;
-
+    // Puppeteer + Chromium (Lambda binary)
     const executablePath = await chromium.executablePath();
     DBG.d("chromium path", { executablePath });
 
@@ -315,7 +321,12 @@ module.exports.handler = async function (event) {
 
     const page = await browser.newPage();
     await page.setUserAgent(UA_LIST[0]);
-    await page.setViewport({ width: 1420, height: 980 });
+    await page.setViewport({ width: 1360, height: 900 });
+    await page.setExtraHTTPHeaders({
+      "accept-language": "en-IN,en;q=0.9",
+      "upgrade-insecure-requests": "1",
+      "sec-fetch-mode": "navigate",
+    });
 
     // Block heavy assets
     await page.setRequestInterception(true);
@@ -328,27 +339,33 @@ module.exports.handler = async function (event) {
     const out = [];
     let shotBase64 = null;
 
-    // Prefer Flipkart first if both provided
-    const doFlipFirst = !!(amazonUrl && flipkartUrl);
-    const siteOrder = doFlipFirst ? ["flipkart", "amazon"] : (flipkartUrl ? ["flipkart"] : ["amazon"]);
+    // Prefer Flipkart first (but abort quickly if captcha)
+    const siteOrder = (amazonUrl && flipkartUrl) ? ["flipkart", "amazon"] : (flipkartUrl ? ["flipkart"] : ["amazon"]);
 
     for (const site of siteOrder) {
+      if (timeLeft(deadline) < 1000) { DBG.d(`${site}: skipped due to deadline`); continue; }
+
       if (site === "flipkart") {
         if (!flipkartUrl) { DBG.d("flipkart: no url provided"); continue; }
-        if (timeLeft(deadline) <= 1200) { DBG.d("flipkart: skipped due to deadline"); continue; }
 
         let pos = 0;
-        const pagesToDo = Math.min(maxPages, fast ? 1 : maxPages);
-        for (let p = 1; p <= pagesToDo; p++) {
-          if (timeLeft(deadline) < 1200) { DBG.d("deadline near, stop flipkart"); break; }
+        for (let p = 1; p <= maxPages; p++) {
+          if (timeLeft(deadline) < 1000) { DBG.d("deadline near, stop flipkart"); break; }
           const url = pageWithParam(flipkartUrl, p);
 
-          // dual ready selector (anchors first, fallback to container grid)
-          let ok = await gotoWithRetries(page, url, "a[href*='/p/']", localOpts.timeoutMs, DBG);
+          // Early captcha detection via title
+          const nav1 = await gotoWithRetries(page, url, "a[href*='/p/']", localOpts.timeoutMs, DBG, { detectCaptchaTitle: true });
+          if (nav1.captcha) { captcha.flipkart = true; DBG.d("flipkart: captcha page, skipping site"); break; }
+          let ok = nav1.ok;
+
           if (!ok) {
-            ok = await gotoWithRetries(page, url, "div._1YokD2, div._2kHMtA, div.y0S0Pe", localOpts.timeoutMs, DBG);
+            // fallback to container grid selectors
+            const nav2 = await gotoWithRetries(page, url, "div._1YokD2, div._2kHMtA, div.y0S0Pe", localOpts.timeoutMs, DBG, { detectCaptchaTitle: true });
+            if (nav2.captcha) { captcha.flipkart = true; DBG.d("flipkart: captcha page (fallback), skipping site"); break; }
+            ok = nav2.ok;
           }
-          if (!ok) { DBG.d("flipkart: goto failed", { url }); continue; }
+
+          if (!ok) { DBG.d("flipkart: goto failed", { url }); break; }
 
           if (shotEnabled && !shotBase64) {
             shotBase64 = await page.screenshot({ type: "jpeg", quality: 40, encoding: "base64" }).catch(() => null);
@@ -360,15 +377,12 @@ module.exports.handler = async function (event) {
         }
       } else {
         if (!amazonUrl) { DBG.d("amazon: no url provided"); continue; }
-        if (timeLeft(deadline) <= 1200) { DBG.d("amazon: skipped due to deadline"); continue; }
-
         let pos = 0;
-        const pagesToDo = Math.min(maxPages, fast ? 1 : maxPages);
-        for (let p = 1; p <= pagesToDo; p++) {
-          if (timeLeft(deadline) < 1200) { DBG.d("deadline near, stop amazon"); break; }
+        for (let p = 1; p <= maxPages; p++) {
+          if (timeLeft(deadline) < 1000) { DBG.d("deadline near, stop amazon"); break; }
           const url = pageWithParam(amazonUrl, p);
-          const ok = await gotoWithRetries(page, url, "div.s-main-slot", localOpts.timeoutMs, DBG);
-          if (!ok) { DBG.d("amazon: goto failed", { url }); continue; }
+          const nav = await gotoWithRetries(page, url, "div.s-main-slot", localOpts.timeoutMs, DBG);
+          if (!nav.ok) { DBG.d("amazon: goto failed", { url }); break; }
 
           if (shotEnabled && !shotBase64) {
             shotBase64 = await page.screenshot({ type: "jpeg", quality: 40, encoding: "base64" }).catch(() => null);
@@ -391,7 +405,7 @@ module.exports.handler = async function (event) {
       seen.add(k); rows.push(r);
     }
 
-    const result = { ok: true, fast, count: rows.length, rows };
+    const result = { ok: true, count: rows.length, rows, captcha };
     if (debugEnabled) result.debug = DBG.dump();
     if (shotEnabled && shotBase64) result.debug_screenshot = `data:image/jpeg;base64,${shotBase64}`;
 
