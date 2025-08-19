@@ -1,11 +1,13 @@
-/* ---------- Helpers ---------- */
+/* ---------- Tiny DOM helpers ---------- */
 const $ = (s, r=document)=>r.querySelector(s);
 const $$ = (s, r=document)=>Array.from(r.querySelectorAll(s));
 
+/* ---------- App state ---------- */
 let rows = [];      // unified rows from backend
 let filtered = [];  // after search/sort
 let matches = [];   // matched pairs
 
+/* ---------- URL normalization ---------- */
 function normalizeInputUrl(raw, platform) {
   if (!raw) return null;
   let s = String(raw).trim();
@@ -22,7 +24,7 @@ function normalizeInputUrl(raw, platform) {
   }
 }
 
-/* ---------- Fuzzy matching ---------- */
+/* ---------- Fuzzy matching for pairs ---------- */
 function normName(s){
   if(!s) return "";
   return s.toLowerCase()
@@ -130,6 +132,7 @@ function computeMatches(){
   $('#matches').innerHTML = matches.map(viewMatch).join("");
 }
 
+/* ---------- Search + Sort ---------- */
 function applySearchAndSort(){
   const term = ($('#search').value||'').toLowerCase();
   filtered = rows.filter(r=> !term || (r.product_name||'').toLowerCase().includes(term));
@@ -140,7 +143,7 @@ function applySearchAndSort(){
 function sortBy(mode){
   const key = {
     discount: (r)=> (r.discount_percent==null ? -Infinity : r.discount_percent),
-    lowest:   (r)=> (r.price==null ? Infinity : r.price) * -1, // we reverse later
+    lowest:   (r)=> (r.price==null ? Infinity : r.price) * -1, // reverse later
     highest:  (r)=> (r.price==null ? -Infinity : r.price),
     reviews:  (r)=> (r.review_count==null ? -Infinity : r.review_count),
   }[mode];
@@ -158,7 +161,7 @@ function sortBy(mode){
   computeMatches();
 }
 
-/* ---------- Debug UI ---------- */
+/* ---------- Debug panel ---------- */
 function showDebug(lines, shot) {
   const box = $('#debugOut');
   if (!lines && !shot) { box.style.display='none'; box.textContent=''; return; }
