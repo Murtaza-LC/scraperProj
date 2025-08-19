@@ -1,27 +1,35 @@
-// netlify/functions/scrape.js — with rich debug
+// netlify/functions/scrape.js
+// Serverless scraper for Amazon + Flipkart (listing pages only)
+// Runtime: Node 20 (Netlify), bundler: esbuild
+
 const chromium = require("@sparticuz/chromium");
 const puppeteer = require("puppeteer-core");
 
-/* ---------------- Config (base) ---------------- */
+/* ---------------- Config ---------------- */
 const UA_LIST = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
 ];
 
 const BASE_OPTS = {
-  timeoutMs: 25000,   // per page wait
+  timeoutMs: 25000,   // per-page selector wait (non-fast)
   minWaitMs: 900,
   maxWaitMs: 2200,
   scrollSteps: 8,
-  scrollPauseMs: 650
+  scrollPauseMs: 650,
 };
+
+const HARD_LIMIT_MS = 18000; // total function budget (~18s)
 
 /* ---------------- Small helpers ---------------- */
 const resp = (code, body) => ({
   statusCode: code,
-  headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" },
-  body: JSON.stringify(body)
+  headers: {
+    "Content-Type": "application/json; charset=utf-8",
+    "Access-Control-Allow-Origin": "*",
+  },
+  body: JSON.stringify(body),
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -53,13 +61,6 @@ const brandGuess = (name) => {
 
 const pageWithParam = (url, n) => (n <= 1 ? url : `${url}${url.includes("?") ? "&" : "?"}page=${n}`);
 
-async function autoScroll(page, steps, pause) {
-  for (let i = 0; i < steps; i++) {
-    await page.evaluate(() => window.scrollBy(0, document.body.scrollHeight));
-    await sleep(pause);
-  }
-}
-
 function makeDebugger(enabled) {
   const lines = [];
   const d = (msg, extra) => {
@@ -68,31 +69,6 @@ function makeDebugger(enabled) {
     lines.push(line);
   };
   return { d, dump: () => (enabled ? lines : undefined) };
-}
-
-async function gotoWithRetries(page, url, readySel, timeoutMs, dbg) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const t0 = Date.now();
-    try {
-      dbg.d(`goto attempt ${attempt + 1}`, { url });
-      await page.goto(url, { timeout: timeoutMs, waitUntil: "domcontentloaded" });
-      const title = await page.title().catch(() => "");
-      const cur = page.url();
-      dbg.d("after goto", { title, cur, dur_ms: Date.now() - t0 });
-      dbg.d("waiting for selector", { readySel });
-      await page.waitForSelector(readySel, { timeout: timeoutMs });
-      dbg.d("selector appeared", { readySel, dur_ms: Date.now() - t0 });
-      // quick sampling
-      const htmlLen = await page.evaluate(() => document.documentElement.outerHTML.length).catch(() => -1);
-      dbg.d("html length", { htmlLen });
-      return true;
-    } catch (e) {
-      dbg.d("goto/wait error", { attempt, err: String(e) });
-      if (attempt === 1) return false;
-      await sleep(800);
-    }
-  }
-  return false;
 }
 
 const normalizeUrl = (u) => {
@@ -111,7 +87,40 @@ const ensureAllowed = (u, platform) => {
   return u;
 };
 
-/* ---------------- Extractors ---------------- */
+/* ---------------- Navigation helper ---------------- */
+async function gotoWithRetries(page, url, readySel, timeoutMs, dbg) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const t0 = Date.now();
+    try {
+      dbg.d(`goto attempt ${attempt + 1}`, { url });
+      await page.goto(url, { timeout: timeoutMs, waitUntil: "domcontentloaded" });
+      const title = await page.title().catch(() => "");
+      const cur = page.url();
+      dbg.d("after goto", { title, cur, dur_ms: Date.now() - t0 });
+      dbg.d("waiting for selector", { readySel });
+      await page.waitForSelector(readySel, { timeout: timeoutMs });
+      dbg.d("selector appeared", { readySel, dur_ms: Date.now() - t0 });
+      const htmlLen = await page.evaluate(() => document.documentElement.outerHTML.length).catch(() => -1);
+      dbg.d("html length", { htmlLen });
+      return true;
+    } catch (e) {
+      dbg.d("goto/wait error", { attempt, err: String(e) });
+      if (attempt === 1) return false;
+      await sleep(800);
+    }
+  }
+  return false;
+}
+
+/* ---------------- Scrolling ---------------- */
+async function autoScroll(page, steps, pause) {
+  for (let i = 0; i < steps; i++) {
+    await page.evaluate(() => window.scrollBy(0, document.body.scrollHeight));
+    await sleep(pause);
+  }
+}
+
+/* ---------------- Amazon extractor ---------------- */
 async function extractAmazonList(page, sourceUrl, listOffset, localOpts, limit, dbg) {
   const out = [];
   try { await page.waitForSelector("div.s-main-slot", { timeout: localOpts.timeoutMs }); }
@@ -119,12 +128,10 @@ async function extractAmazonList(page, sourceUrl, listOffset, localOpts, limit, 
 
   const cards = await page.$$("div.s-main-slot div.s-result-item[data-component-type='s-search-result']");
   dbg.d("amazon: cards count", { n: cards.length });
-  // Log a tiny sample of the slot’s text to confirm content
   const slotPreview = await page.$eval("div.s-main-slot", el => (el.textContent || "").slice(0, 200)).catch(() => "");
   dbg.d("amazon: slot preview", { text: slotPreview });
 
   let pos = listOffset;
-
   for (const c of cards) {
     try {
       const titleEl = await c.$("h2 a span.a-size-medium") || await c.$("h2 a span") || await c.$("h2");
@@ -159,7 +166,7 @@ async function extractAmazonList(page, sourceUrl, listOffset, localOpts, limit, 
           brand_guess: brandGuess(name),
           price, mrp, discount_percent: pctOff(mrp, price),
           rating: null, review_count: null,
-          product_url, image_url, source_url: sourceUrl
+          product_url, image_url, source_url: sourceUrl,
         });
         if (out.length >= limit) break;
       }
@@ -169,8 +176,12 @@ async function extractAmazonList(page, sourceUrl, listOffset, localOpts, limit, 
   return [out, pos];
 }
 
+/* ---------------- Flipkart helpers + extractor ---------------- */
 async function closeFlipkartPopups(page, dbg) {
-  try { const btn = await page.$("button._2KpZ6l._2doB4z"); if (btn) { await btn.click(); dbg.d("flipkart: closed popup button"); } } catch {}
+  try {
+    const btn = await page.$("button._2KpZ6l._2doB4z");
+    if (btn) { await btn.click(); dbg.d("flipkart: closed popup button"); }
+  } catch {}
   try { await page.keyboard.press("Escape"); } catch {}
 }
 
@@ -187,6 +198,12 @@ async function extractFlipkartList(page, sourceUrl, listOffset, localOpts, limit
 
   const anchors = await page.$$("a[href*='/p/']");
   dbg.d("flipkart: anchors count", { n: anchors.length });
+  if (anchors.length === 0) {
+    const classes = await page.evaluate(() => Array.from(new Set(
+      Array.from(document.querySelectorAll('div')).map(d => d.className).join(' ').split(/\s+/).filter(Boolean)
+    )).slice(0, 40));
+    dbg.d("flipkart: no anchors; class sample", { classes });
+  }
   const pagePreview = await page.$eval("body", el => (el.textContent || "").slice(0, 200)).catch(() => "");
   dbg.d("flipkart: body preview", { text: pagePreview });
 
@@ -242,7 +259,7 @@ async function extractFlipkartList(page, sourceUrl, listOffset, localOpts, limit
           brand_guess: brandGuess(name),
           price, mrp, discount_percent: pctOff(mrp, price),
           rating: null, review_count: null,
-          product_url, image_url: null, source_url: sourceUrl
+          product_url, image_url: null, source_url: sourceUrl,
         });
         if (out.length >= limit) break;
       }
@@ -269,24 +286,22 @@ module.exports.handler = async function (event) {
       return resp(400, { ok: false, error: "Provide a valid Amazon and/or Flipkart listing URL (https://…)", debug: DBG.dump() });
     }
 
-    // Fast mode + hard deadline to avoid 504s
-    const fast = String(params.fast || "1") === "1";
-    const HARD_LIMIT_MS = 8000;                 // ~8s total budget
     const deadline = Date.now() + HARD_LIMIT_MS;
 
-    // Local opts tuned by fast mode
+    // Fast mode settings
+    const fast = String(params.fast || "1") === "1";
     const localOpts = {
-      timeoutMs: BASE_OPTS.timeoutMs,
-      minWaitMs: fast ? 200 : BASE_OPTS.minWaitMs,
-      maxWaitMs: fast ? 450 : BASE_OPTS.maxWaitMs,
-      scrollSteps: fast ? 3 : BASE_OPTS.scrollSteps,
-      scrollPauseMs: fast ? 250 : BASE_OPTS.scrollPauseMs
+      timeoutMs: fast ? 12000 : BASE_OPTS.timeoutMs,
+      minWaitMs: fast ? 120 : BASE_OPTS.minWaitMs,
+      maxWaitMs: fast ? 300 : BASE_OPTS.maxWaitMs,
+      scrollSteps: fast ? 2 : BASE_OPTS.scrollSteps,
+      scrollPauseMs: fast ? 180 : BASE_OPTS.scrollPauseMs,
     };
 
-    // Keep light by default
     const maxPages = Math.max(1, Math.min(3, parseInt(params.max_pages || "1", 10)));
-    const perSiteLimit = fast ? 16 : 24;
-    const pdpPrices = false; // Off in this short function variant
+    const perSiteLimit = fast ? 12 : 24;
+    // PDP enrichment intentionally OFF to keep within function time
+    // const pdpPrices = false;
 
     const executablePath = await chromium.executablePath();
     DBG.d("chromium path", { executablePath });
@@ -295,14 +310,14 @@ module.exports.handler = async function (event) {
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
       executablePath,
-      headless: chromium.headless
+      headless: chromium.headless,
     });
 
     const page = await browser.newPage();
     await page.setUserAgent(UA_LIST[0]);
     await page.setViewport({ width: 1420, height: 980 });
 
-    // Intercept heavy assets ONCE
+    // Block heavy assets
     await page.setRequestInterception(true);
     page.on("request", (req) => {
       const t = req.resourceType();
@@ -313,41 +328,56 @@ module.exports.handler = async function (event) {
     const out = [];
     let shotBase64 = null;
 
-    // Amazon
-    if (amazonUrl && timeLeft(deadline) > 1200) {
-      let pos = 0;
-      const pagesToDo = Math.min(maxPages, fast ? 1 : maxPages);
-      for (let p = 1; p <= pagesToDo; p++) {
-        if (timeLeft(deadline) < 1200) { DBG.d("deadline near, stop amazon"); break; }
-        const url = pageWithParam(amazonUrl, p);
-        const ok = await gotoWithRetries(page, url, "div.s-main-slot", localOpts.timeoutMs, DBG);
-        if (!ok) { DBG.d("amazon: goto failed", { url }); continue; }
-        if (shotEnabled && !shotBase64) {
-          shotBase64 = await page.screenshot({ type: "jpeg", quality: 40, encoding: "base64" }).catch(() => null);
-        }
-        await randWait(localOpts.minWaitMs, localOpts.maxWaitMs);
-        await autoScroll(page, localOpts.scrollSteps, localOpts.scrollPauseMs);
-        const [chunk, newPos] = await extractAmazonList(page, amazonUrl, pos, localOpts, perSiteLimit, DBG);
-        pos = newPos; out.push(...chunk);
-      }
-    }
+    // Prefer Flipkart first if both provided
+    const doFlipFirst = !!(amazonUrl && flipkartUrl);
+    const siteOrder = doFlipFirst ? ["flipkart", "amazon"] : (flipkartUrl ? ["flipkart"] : ["amazon"]);
 
-    // Flipkart
-    if (flipkartUrl && timeLeft(deadline) > 1200) {
-      let pos = 0;
-      const pagesToDo = Math.min(maxPages, fast ? 1 : maxPages);
-      for (let p = 1; p <= pagesToDo; p++) {
-        if (timeLeft(deadline) < 1200) { DBG.d("deadline near, stop flipkart"); break; }
-        const url = pageWithParam(flipkartUrl, p);
-        const ok = await gotoWithRetries(page, url, "a[href*='/p/']", localOpts.timeoutMs, DBG);
-        if (!ok) { DBG.d("flipkart: goto failed", { url }); continue; }
-        if (shotEnabled && !shotBase64) {
-          shotBase64 = await page.screenshot({ type: "jpeg", quality: 40, encoding: "base64" }).catch(() => null);
+    for (const site of siteOrder) {
+      if (site === "flipkart") {
+        if (!flipkartUrl) { DBG.d("flipkart: no url provided"); continue; }
+        if (timeLeft(deadline) <= 1200) { DBG.d("flipkart: skipped due to deadline"); continue; }
+
+        let pos = 0;
+        const pagesToDo = Math.min(maxPages, fast ? 1 : maxPages);
+        for (let p = 1; p <= pagesToDo; p++) {
+          if (timeLeft(deadline) < 1200) { DBG.d("deadline near, stop flipkart"); break; }
+          const url = pageWithParam(flipkartUrl, p);
+
+          // dual ready selector (anchors first, fallback to container grid)
+          let ok = await gotoWithRetries(page, url, "a[href*='/p/']", localOpts.timeoutMs, DBG);
+          if (!ok) {
+            ok = await gotoWithRetries(page, url, "div._1YokD2, div._2kHMtA, div.y0S0Pe", localOpts.timeoutMs, DBG);
+          }
+          if (!ok) { DBG.d("flipkart: goto failed", { url }); continue; }
+
+          if (shotEnabled && !shotBase64) {
+            shotBase64 = await page.screenshot({ type: "jpeg", quality: 40, encoding: "base64" }).catch(() => null);
+          }
+          await randWait(localOpts.minWaitMs, localOpts.maxWaitMs);
+          await autoScroll(page, localOpts.scrollSteps, localOpts.scrollPauseMs);
+          const [chunk, newPos] = await extractFlipkartList(page, flipkartUrl, pos, localOpts, perSiteLimit, DBG);
+          pos = newPos; out.push(...chunk);
         }
-        await randWait(localOpts.minWaitMs, localOpts.maxWaitMs);
-        await autoScroll(page, localOpts.scrollSteps, localOpts.scrollPauseMs);
-        const [chunk, newPos] = await extractFlipkartList(page, flipkartUrl, pos, localOpts, perSiteLimit, DBG);
-        pos = newPos; out.push(...chunk);
+      } else {
+        if (!amazonUrl) { DBG.d("amazon: no url provided"); continue; }
+        if (timeLeft(deadline) <= 1200) { DBG.d("amazon: skipped due to deadline"); continue; }
+
+        let pos = 0;
+        const pagesToDo = Math.min(maxPages, fast ? 1 : maxPages);
+        for (let p = 1; p <= pagesToDo; p++) {
+          if (timeLeft(deadline) < 1200) { DBG.d("deadline near, stop amazon"); break; }
+          const url = pageWithParam(amazonUrl, p);
+          const ok = await gotoWithRetries(page, url, "div.s-main-slot", localOpts.timeoutMs, DBG);
+          if (!ok) { DBG.d("amazon: goto failed", { url }); continue; }
+
+          if (shotEnabled && !shotBase64) {
+            shotBase64 = await page.screenshot({ type: "jpeg", quality: 40, encoding: "base64" }).catch(() => null);
+          }
+          await randWait(localOpts.minWaitMs, localOpts.maxWaitMs);
+          await autoScroll(page, localOpts.scrollSteps, localOpts.scrollPauseMs);
+          const [chunk, newPos] = await extractAmazonList(page, amazonUrl, pos, localOpts, perSiteLimit, DBG);
+          pos = newPos; out.push(...chunk);
+        }
       }
     }
 
