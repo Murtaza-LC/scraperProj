@@ -54,6 +54,12 @@
       </select>
       <label class="row" style="gap:6px"><input id="pdp" type="checkbox"/> Enrich PDP</label>
       <button id="run" class="btn">Scrape</button>
+      <label style="display:inline-flex;gap:.4rem;align-items:center;margin:.5rem 0;">
+  		<input type="checkbox" id="dbg"> Debug</label>
+		<label style="display:inline-flex;gap:.4rem;align-items:center;margin:.5rem 0;">
+		<input type="checkbox" id="dbgshot"> Screenshot
+		</label>
+	  <pre id="debugOut" style="background:#0b1020;color:#cde; padding:10px; border-radius:6px; max-height:220px; overflow:auto; display:none;"></pre>
     </div>
   </div>
 </header>
@@ -233,20 +239,22 @@ function sortBy(mode){
   renderLists();
   computeMatches();
 }
-// Safer normalizer: returns https URL or null; optionally checks host by platform.
-function normalizeInputUrl(raw, platform) {
-  if (!raw) return null;
-  let s = String(raw).trim();
-  if (!s) return null;
-  if (!/^https?:\/\//i.test(s)) s = 'https://' + s.replace(/^\/+/, '');
-  try {
-    const u = new URL(s);
-    const host = u.host.toLowerCase();
-    if (platform === 'amazon' && !host.includes('amazon.')) return null;
-    if (platform === 'flipkart' && !host.includes('flipkart.com')) return null;
-    return u.toString();
-  } catch {
-    return null;
+
+function showDebug(lines, shot) {
+  const box = document.getElementById('debugOut');
+  if (!lines && !shot) { box.style.display='none'; box.textContent=''; return; }
+  let text = '';
+  if (Array.isArray(lines)) text += lines.join('\n');
+  box.textContent = text || '(no debug lines)';
+  box.style.display = 'block';
+  if (shot) {
+    const img = new Image();
+    img.src = shot;
+    img.alt = 'debug screenshot';
+    img.style.display = 'block';
+    img.style.maxWidth = '100%';
+    img.style.marginTop = '8px';
+    box.appendChild(img);
   }
 }
 
@@ -261,28 +269,32 @@ async function run() {
 
   const btn = document.querySelector('#run');
   btn.disabled = true; btn.textContent = 'Scraping...';
+  showDebug(); // hide previous
 
   try {
     const fnUrl = new URL('/.netlify/functions/scrape', window.location.origin);
     if (amazon) fnUrl.searchParams.set('amazon_url', amazon);
     if (flip)   fnUrl.searchParams.set('flipkart_url', flip);
-
-    // Keep requests fast to avoid 504s
     fnUrl.searchParams.set('fast', '1');
-    const maxPages = (document.querySelector('#maxPages')?.value || '1').trim();
-    fnUrl.searchParams.set('max_pages', String(Math.max(1, Math.min(3, parseInt(maxPages, 10) || 1))));
-    // PDP enrichment disabled for short runs (omit the param)
-    // If you ever enable it: fnUrl.searchParams.set('pdp_prices', '1');
+    fnUrl.searchParams.set('max_pages', String(Math.max(1, Math.min(3, parseInt((document.querySelector('#maxPages')?.value || '1'), 10) || 1))));
 
+    if (document.getElementById('dbg')?.checked) fnUrl.searchParams.set('debug', '1');
+    if (document.getElementById('dbgshot')?.checked) fnUrl.searchParams.set('debug_shot', '1');
+
+    console.log('Calling:', fnUrl.toString());
     const res = await fetch(fnUrl.toString(), { method: 'GET' });
     const data = await res.json().catch(() => ({}));
+
+    // Show debug (even on errors, if present)
+    if (data && (data.debug || data.debug_screenshot)) {
+      showDebug(data.debug, data.debug_screenshot);
+    }
 
     if (!res.ok || data.ok === false) {
       const msg = (data && (data.error || data.message)) || `HTTP ${res.status}`;
       throw new Error(msg);
     }
 
-    // Expect { ok:true, rows:[...] }
     window.rows = data.rows || [];
     window.filtered = window.rows.slice();
     if (typeof applySearchAndSort === 'function') {
@@ -295,7 +307,6 @@ async function run() {
     btn.disabled = false; btn.textContent = 'Scrape';
   }
 }
-
 // Event wiring
 $('#run').addEventListener('click', run);
 $('#search').addEventListener('input', applySearchAndSort);
