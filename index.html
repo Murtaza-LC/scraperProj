@@ -6,22 +6,21 @@
   <title>Amazon Trending Finder</title>
   <link rel="stylesheet" href="app.css">
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; background:#0b0c10; color:#e6e6e6; }
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin:0; background:#0b0c10; color:#e6e6e6; }
     header { background:#11131a; border-bottom:1px solid #1e2230; }
     .container { max-width: 1100px; margin: 0 auto; padding: 14px; }
-    .row { display:flex; align-items:center; gap:10px; }
-    .wrap { flex-wrap:wrap; }
+    .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
     .stretch { flex:1; }
     .btn { background:#3e7bff; color:#fff; padding:9px 14px; border:none; border-radius:8px; cursor:pointer; }
-    .btn[disabled] { opacity:0.6; cursor:not-allowed; }
-    .nav h1 { font-size:20px; margin:0 0 8px 0; }
+    .btn[disabled] { opacity:.6; cursor:not-allowed; }
+    .card { background:#121521; border:1px solid #1f2740; border-radius:14px; padding:12px; }
     .tabs { display:flex; gap:8px; flex-wrap:wrap; }
     .tab { padding:8px 12px; border:1px solid #2a3142; border-radius:999px; cursor:pointer; background:#141824; }
     .tab.active { background:#23304d; border-color:#3a4a6c; }
-    .card { background:#121521; border:1px solid #1f2740; border-radius:14px; padding:12px; }
     .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .pill { background:#1a1f31; border:1px solid #2b3552; padding:6px 10px; border-radius:999px; cursor:pointer; }
     .muted { color:#9aa3b2; }
+    input[type="text"], input[type="number"], select { background:#0e1220; color:#e6e6e6; border:1px solid #2a3142; padding:8px 10px; border-radius:8px; }
     .list { display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:10px; }
     .item { display:grid; grid-template-columns: 72px 1fr auto; gap:10px; padding:10px; border:1px solid #232a40; border-radius:12px; text-decoration:none; color:inherit; background:#0f1220; }
     .item img { width:72px; height:72px; object-fit:contain; background:#0b0d18; border-radius:8px; }
@@ -34,14 +33,9 @@
     .tables-grid { display:grid; grid-template-columns: 1fr; gap:16px; }
     @media (min-width: 980px) { .tables-grid { grid-template-columns: 1fr 1fr; } }
     .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
-    input[type="text"], input[type="number"], select { background:#0e1220; color:#e6e6e6; border:1px solid #2a3142; padding:8px 10px; border-radius:8px; }
-    details { border:1px dashed #2a3142; border-radius:12px; padding:8px 10px; background:#0f1220; }
-    details summary { cursor:pointer; font-weight:600; color:#c7d2fe; }
-    .grid { display:grid; gap:10px; }
-    .grid-4 { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
-    .grid-3 { grid-template-columns: repeat(3, minmax(160px, 1fr)); }
     .debug-out { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; background:#0b0d18; color:#b7cdf3; padding:10px; border-radius:10px; border:1px solid #1c2340; }
-    label.small { font-size:12px; color:#9aa3b2; display:block; margin-bottom:4px; }
+    .status { font-size:12px; color:#cbd5e1; }
+    .chip { padding:6px 10px; border:1px solid #2a3142; border-radius:999px; }
   </style>
 </head>
 <body>
@@ -49,53 +43,45 @@
   <div class="container nav">
     <h1>Amazon Trending Finder</h1>
 
-    <div class="row wrap" style="width:100%">
-      <input id="amazonUrl" class="stretch" placeholder="Optional: Custom Amazon URL (else uses 4 presets)"/>
-      <select id="maxPages">
-        <option value="1">Pages: 1</option>
-        <option value="2" selected>Pages: 2</option>
-        <option value="3">Pages: 3</option>
+    <div class="row" style="width:100%">
+      <select id="mode">
+        <option value="all" selected>Fetch all 4 categories</option>
+        <option value="single_mobiles">Mobiles only</option>
+        <option value="single_mobile_accessories">Mobile accessories only</option>
+        <option value="single_laptops">Laptops only</option>
+        <option value="single_laptop_accessories">Laptop accessories only</option>
+        <option value="custom">Custom Amazon URL</option>
       </select>
+
+      <input id="amazonUrl" class="stretch" placeholder="Used only in Custom mode (https://www.amazon.in/s?...)" style="display:none"/>
+
+      <label>Pages
+        <select id="maxPages">
+          <option value="1">1</option>
+          <option value="2" selected>2</option>
+          <option value="3">3</option>
+        </select>
+      </label>
+
+      <label>Per list
+        <input id="perListLimit" type="number" min="6" max="40" step="1" value="16"/>
+      </label>
+
+      <label>timeout_ms
+        <input id="timeoutMs" type="number" min="3000" step="500" value="12000"/>
+      </label>
+
       <button id="run" class="btn">Fetch</button>
       <label class="row"><input type="checkbox" id="dbg"> Debug</label>
       <label class="row"><input type="checkbox" id="dbgshot"> Screenshot</label>
     </div>
 
-    <details style="margin-top:8px">
-      <summary>Advanced tuning (timeouts, limits)</summary>
-      <div class="grid grid-4" style="margin-top:10px">
-        <div>
-          <label class="small" for="advTimeoutMs">timeout_ms (per page)</label>
-          <input id="advTimeoutMs" type="number" min="3000" step="500" placeholder="12000" />
-        </div>
-        <div>
-          <label class="small" for="advHardLimitMs">hard_limit_ms (overall)</label>
-          <input id="advHardLimitMs" type="number" min="8000" step="1000" placeholder="25000" />
-        </div>
-        <div>
-          <label class="small" for="advPerListLimit">per_list_limit (items/category)</label>
-          <input id="advPerListLimit" type="number" min="6" max="40" step="1" placeholder="16" />
-        </div>
-        <div>
-          <label class="small" for="advPreset">Preset</label>
-          <select id="advPreset">
-            <option value="all" selected>All categories</option>
-            <option value="mobiles">Mobiles only</option>
-            <option value="mobile_accessories">Mobile accessories</option>
-            <option value="laptops">Laptops</option>
-            <option value="laptop_accessories">Laptop accessories</option>
-          </select>
-        </div>
-      </div>
-      <div class="muted" style="margin-top:6px">
-        Tip: Leave fields blank to use defaults. If you enter a custom URL, the preset is ignored.
-      </div>
-    </details>
+    <div class="row status" id="statusRow" style="margin-top:6px; display:none"></div>
 
     <div class="tabs" style="margin-top:8px">
-      <span class="tab active" data-cat="mobiles">Trending Mobile Phones</span>
-      <span class="tab" data-cat="mobile_accessories">Mobile Phone Accessories</span>
-      <span class="tab" data-cat="laptops">Trending Laptops</span>
+      <span class="tab active" data-cat="mobiles">Mobiles</span>
+      <span class="tab" data-cat="mobile_accessories">Mobile Accessories</span>
+      <span class="tab" data-cat="laptops">Laptops</span>
       <span class="tab" data-cat="laptop_accessories">Laptop Accessories</span>
       <span class="muted" style="margin-left:auto;">(Click a tab to view that list)</span>
     </div>
@@ -103,20 +89,24 @@
 </header>
 
 <main class="container">
-  <!-- First pane: Listings for the selected tab -->
+  <!-- First pane -->
   <section class="card" style="margin-bottom:16px">
+    <div class="head">
+      <strong>Amazon — Trending Lists</strong>
+      <span id="totalCount" class="muted"></span>
+    </div>
     <div class="toolbar">
       <span class="pill" data-sort="discount">Most discount</span>
       <span class="pill" data-sort="lowest">Lowest price</span>
       <span class="pill" data-sort="highest">Highest price</span>
       <span class="pill" data-sort="reviews">Most reviews</span>
-      <input id="search" class="stretch" placeholder="Search current tab (e.g., 5G, 256GB, Samsung)"/>
-      <span id="countActive" class="muted"></span>
+      <span class="pill" data-sort="bought">Most bought (month)</span>
+      <input id="search" class="stretch" placeholder="Search in selected tab"/>
     </div>
     <div id="listActive" class="list" style="margin-top:10px"></div>
   </section>
 
-  <!-- Second pane: Best-selling tables across all four categories -->
+  <!-- Second pane -->
   <section class="card" style="margin-bottom:16px">
     <div class="head"><strong>Best Sellers (by “bought in past month”, fallback to reviews)</strong></div>
     <div class="tables-grid">
