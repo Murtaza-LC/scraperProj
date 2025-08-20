@@ -3,120 +3,139 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Amazon Trending Tracker</title>
+  <title>Amazon Trending Finder</title>
   <link rel="stylesheet" href="app.css">
   <style>
-    /* Small additions for the new UI */
-    .chips { display:flex; gap:8px; flex-wrap:wrap; }
-    .chip { padding:6px 10px; border:1px solid #ddd; border-radius:999px; cursor:pointer; }
-    .chip.active { background:#111; color:#fff; border-color:#111; }
-    .subhead { color:#666; font-size:13px; }
-    table { width:100%; border-collapse:collapse; }
-    th, td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; }
-    th { background:#fafafa; position:sticky; top:0; z-index:1; }
-    .muted { color:#777; }
-    .badge { display:inline-block; font-size:12px; padding:2px 6px; border-radius:4px; background:#f2f2f2; margin-left:6px; }
-    .ok { color: #088C5E; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; background:#0b0c10; color:#e6e6e6; }
+    header { background:#11131a; border-bottom:1px solid #1e2230; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 14px; }
+    .row { display:flex; align-items:center; gap:10px; }
+    .wrap { flex-wrap:wrap; }
+    .stretch { flex:1; }
+    .btn { background:#3e7bff; color:#fff; padding:9px 14px; border:none; border-radius:8px; cursor:pointer; }
+    .btn[disabled] { opacity:0.6; cursor:not-allowed; }
+    .nav h1 { font-size:20px; margin:0 0 8px 0; }
+    .tabs { display:flex; gap:8px; flex-wrap:wrap; }
+    .tab { padding:8px 12px; border:1px solid #2a3142; border-radius:999px; cursor:pointer; background:#141824; }
+    .tab.active { background:#23304d; border-color:#3a4a6c; }
+    .card { background:#121521; border:1px solid #1f2740; border-radius:14px; padding:12px; }
+    .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .pill { background:#1a1f31; border:1px solid #2b3552; padding:6px 10px; border-radius:999px; cursor:pointer; }
+    .muted { color:#9aa3b2; }
+    .list { display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:10px; }
+    .item { display:grid; grid-template-columns: 72px 1fr auto; gap:10px; padding:10px; border:1px solid #232a40; border-radius:12px; text-decoration:none; color:inherit; background:#0f1220; }
+    .item img { width:72px; height:72px; object-fit:contain; background:#0b0d18; border-radius:8px; }
+    .name { font-weight:600; font-size:14px; line-height:1.3; }
+    .price { font-weight:700; }
+    .tag { display:inline-block; font-size:12px; padding:3px 6px; border-radius:999px; border:1px solid #2b3552; background:#11162a; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { padding:8px; border-bottom:1px solid #21263a; text-align:left; }
+    th { position:sticky; top:0; background:#121521; z-index:1; }
+    .tables-grid { display:grid; grid-template-columns: 1fr; gap:16px; }
+    @media (min-width: 980px) { .tables-grid { grid-template-columns: 1fr 1fr; } }
+    .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+    input[type="text"], input[type="number"], select { background:#0e1220; color:#e6e6e6; border:1px solid #2a3142; padding:8px 10px; border-radius:8px; }
+    details { border:1px dashed #2a3142; border-radius:12px; padding:8px 10px; background:#0f1220; }
+    details summary { cursor:pointer; font-weight:600; color:#c7d2fe; }
+    .grid { display:grid; gap:10px; }
+    .grid-4 { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(160px, 1fr)); }
+    .debug-out { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; background:#0b0d18; color:#b7cdf3; padding:10px; border-radius:10px; border:1px solid #1c2340; }
+    label.small { font-size:12px; color:#9aa3b2; display:block; margin-bottom:4px; }
   </style>
 </head>
 <body>
 <header>
   <div class="container nav">
-    <h1>Amazon Trending Tracker</h1>
-    <div class="row" style="width:100%; gap:8px; align-items:center; flex-wrap:wrap">
-      <input id="amazonUrl" class="stretch" placeholder="(Optional) Custom Amazon listing URL, e.g. https://www.amazon.in/s?k=trending+mobile+phones"/>
+    <h1>Amazon Trending Finder</h1>
+
+    <div class="row wrap" style="width:100%">
+      <input id="amazonUrl" class="stretch" placeholder="Optional: Custom Amazon URL (else uses 4 presets)"/>
       <select id="maxPages">
         <option value="1">Pages: 1</option>
-        <option value="2">Pages: 2</option>
+        <option value="2" selected>Pages: 2</option>
         <option value="3">Pages: 3</option>
       </select>
-      <button id="run" class="btn">Scrape</button>
-      <label class="inline"><input type="checkbox" id="dbg"> Debug</label>
-      <label class="inline"><input type="checkbox" id="dbgshot"> Screenshot</label>
+      <button id="run" class="btn">Fetch</button>
+      <label class="row"><input type="checkbox" id="dbg"> Debug</label>
+      <label class="row"><input type="checkbox" id="dbgshot"> Screenshot</label>
     </div>
-    <div class="subhead" style="margin-top:6px">
-      Tip: Leave the custom URL empty and click “Scrape” to fetch all four built‑in categories.
+
+    <details style="margin-top:8px">
+      <summary>Advanced tuning (timeouts, limits)</summary>
+      <div class="grid grid-4" style="margin-top:10px">
+        <div>
+          <label class="small" for="advTimeoutMs">timeout_ms (per page)</label>
+          <input id="advTimeoutMs" type="number" min="3000" step="500" placeholder="12000" />
+        </div>
+        <div>
+          <label class="small" for="advHardLimitMs">hard_limit_ms (overall)</label>
+          <input id="advHardLimitMs" type="number" min="8000" step="1000" placeholder="25000" />
+        </div>
+        <div>
+          <label class="small" for="advPerListLimit">per_list_limit (items/category)</label>
+          <input id="advPerListLimit" type="number" min="6" max="40" step="1" placeholder="16" />
+        </div>
+        <div>
+          <label class="small" for="advPreset">Preset</label>
+          <select id="advPreset">
+            <option value="all" selected>All categories</option>
+            <option value="mobiles">Mobiles only</option>
+            <option value="mobile_accessories">Mobile accessories</option>
+            <option value="laptops">Laptops</option>
+            <option value="laptop_accessories">Laptop accessories</option>
+          </select>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        Tip: Leave fields blank to use defaults. If you enter a custom URL, the preset is ignored.
+      </div>
+    </details>
+
+    <div class="tabs" style="margin-top:8px">
+      <span class="tab active" data-cat="mobiles">Trending Mobile Phones</span>
+      <span class="tab" data-cat="mobile_accessories">Mobile Phone Accessories</span>
+      <span class="tab" data-cat="laptops">Trending Laptops</span>
+      <span class="tab" data-cat="laptop_accessories">Laptop Accessories</span>
+      <span class="muted" style="margin-left:auto;">(Click a tab to view that list)</span>
     </div>
   </div>
 </header>
 
 <main class="container">
-  <!-- FIRST PANE: Amazon results with category chips / filter -->
+  <!-- First pane: Listings for the selected tab -->
   <section class="card" style="margin-bottom:16px">
-    <div class="toolbar" style="gap:8px; flex-wrap:wrap">
+    <div class="toolbar">
       <span class="pill" data-sort="discount">Most discount</span>
       <span class="pill" data-sort="lowest">Lowest price</span>
       <span class="pill" data-sort="highest">Highest price</span>
       <span class="pill" data-sort="reviews">Most reviews</span>
-
-      <select id="categoryFilter">
-        <option value="">All Categories</option>
-        <option value="mobiles">Trending Mobile Phones</option>
-        <option value="mobile_accessories">Trending Mobile Phone Accessories</option>
-        <option value="laptops">Trending Laptops</option>
-        <option value="laptop_accessories">Trending Laptop Accessories</option>
-      </select>
-      <input id="search" class="stretch" placeholder="Search products (e.g., Samsung, 5G, 16GB RAM)"/>
+      <input id="search" class="stretch" placeholder="Search current tab (e.g., 5G, 256GB, Samsung)"/>
+      <span id="countActive" class="muted"></span>
     </div>
+    <div id="listActive" class="list" style="margin-top:10px"></div>
   </section>
 
+  <!-- Second pane: Best-selling tables across all four categories -->
   <section class="card" style="margin-bottom:16px">
-    <div class="head">
-      <strong>Amazon Results</strong>
-      <span id="countAmazon" class="muted"></span>
-    </div>
-    <div class="chips" id="categoryChips" style="margin-bottom:12px">
-      <div class="chip" data-cat="mobiles">Trending Mobile Phones</div>
-      <div class="chip" data-cat="mobile_accessories">Trending Mobile Phone Accessories</div>
-      <div class="chip" data-cat="laptops">Trending Laptops</div>
-      <div class="chip" data-cat="laptop_accessories">Trending Laptop Accessories</div>
-      <div class="chip" data-cat="">Show All</div>
-    </div>
-    <div id="listAmazon" class="list"></div>
-  </section>
-
-  <!-- SECOND PANE: Best sellers tables per category -->
-  <section class="card">
-    <div class="head"><strong>Best Sellers (by “bought in past month”, then reviews)</strong></div>
-
-    <h3 style="margin-top:12px">Mobile Phones</h3>
-    <div class="table-wrap" style="overflow:auto; max-height:360px">
-      <table id="tbl_mobiles">
-        <thead><tr>
-          <th>#</th><th>Brand</th><th>Model</th><th>Price</th><th>Discount</th><th>Items Sold</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <h3 style="margin-top:18px">Mobile Phone Accessories</h3>
-    <div class="table-wrap" style="overflow:auto; max-height:360px">
-      <table id="tbl_mobile_accessories">
-        <thead><tr>
-          <th>#</th><th>Brand</th><th>Model</th><th>Price</th><th>Discount</th><th>Items Sold</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <h3 style="margin-top:18px">Laptops</h3>
-    <div class="table-wrap" style="overflow:auto; max-height:360px">
-      <table id="tbl_laptops">
-        <thead><tr>
-          <th>#</th><th>Brand</th><th>Model</th><th>Price</th><th>Discount</th><th>Items Sold</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <h3 style="margin-top:18px">Laptop Accessories</h3>
-    <div class="table-wrap" style="overflow:auto; max-height:360px">
-      <table id="tbl_laptop_accessories">
-        <thead><tr>
-          <th>#</th><th>Brand</th><th>Model</th><th>Price</th><th>Discount</th><th>Items Sold</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
+    <div class="head"><strong>Best Sellers (by “bought in past month”, fallback to reviews)</strong></div>
+    <div class="tables-grid">
+      <div>
+        <div class="head"><strong>Mobile Phones</strong><span id="count_mobiles" class="muted"></span></div>
+        <div class="table-wrap"><table id="tbl_mobiles"></table></div>
+      </div>
+      <div>
+        <div class="head"><strong>Phone Accessories</strong><span id="count_mobile_accessories" class="muted"></span></div>
+        <div class="table-wrap"><table id="tbl_mobile_accessories"></table></div>
+      </div>
+      <div>
+        <div class="head"><strong>Laptops</strong><span id="count_laptops" class="muted"></span></div>
+        <div class="table-wrap"><table id="tbl_laptops"></table></div>
+      </div>
+      <div>
+        <div class="head"><strong>Laptop Accessories</strong><span id="count_laptop_accessories" class="muted"></span></div>
+        <div class="table-wrap"><table id="tbl_laptop_accessories"></table></div>
+      </div>
     </div>
   </section>
 
