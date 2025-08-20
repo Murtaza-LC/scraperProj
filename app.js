@@ -2,17 +2,10 @@
 const $ = (s, r=document)=>r.querySelector(s);
 const $$ = (s, r=document)=>Array.from(r.querySelectorAll(s));
 
-/* ---------- App state ---------- */
-let rows = [];      // unified rows from backend
-let filtered = [];  // after search/sort
-
-/* ---------- Constants ---------- */
-const CATEGORY_LABELS = {
-  mobiles: "Trending Mobile Phones",
-  mobile_accessories: "Trending Mobile Phone Accessories",
-  laptops: "Trending Laptops",
-  laptop_accessories: "Trending Laptop Accessories",
-};
+/* ---------- State ---------- */
+let rows = [];             // all rows from backend
+let activeCat = 'mobiles'; // which tab is selected
+let viewRows = [];         // rows visible in the first pane (current tab only)
 
 /* ---------- URL normalization ---------- */
 function normalizeInputUrl(raw) {
@@ -22,100 +15,68 @@ function normalizeInputUrl(raw) {
   if (!/^https?:\/\//i.test(s)) s = 'https://' + s.replace(/^\/+/, '');
   try {
     const u = new URL(s);
-    const host = u.host.toLowerCase();
-    if (!host.includes('amazon.')) return null;
+    if (!u.host.toLowerCase().includes('amazon.')) return null;
     return u.toString();
   } catch {
     return null;
   }
 }
 
-/* ---------- Rendering ---------- */
+/* ---------- Helpers ---------- */
 function priceView(p){ return p!=null ? `₹${Number(p).toLocaleString('en-IN')}` : "—"; }
-function pctView(p){ return p!=null ? `${p}%` : "—"; }
-function soldView(n){ return n!=null ? n.toLocaleString('en-IN') : "—"; }
+function discountView(d){ return d!=null ? `${d}%` : '—'; }
+function boughtView(n){ return n!=null ? n.toLocaleString('en-IN') : '—'; }
 
-function viewItem(r){
-  const img = r.image_url ? `<img src="${r.image_url}" alt="">` : `<img alt="">`;
-  const disc = r.discount_percent!=null ? `<span class="tag">${r.discount_percent}% off</span>` : ``;
-  const rev  = r.review_count!=null ? `<span class="tag">${r.review_count} reviews</span>` : ``;
-  const bought = (r.items_sold_month!=null) ? `<span class="tag ok">${r.items_sold_month.toLocaleString('en-IN')} bought/mo</span>` : ``;
-  const badge = r.badge_best_seller ? `<span class="badge">Best seller</span>` : ``;
-  const cat = r.category ? `<span class="muted">${CATEGORY_LABELS[r.category]||r.category}</span>` : ``;
-
-  return `
-  <a class="item" href="${r.product_url}" target="_blank" rel="noopener">
-    ${img}
-    <div>
-      <div class="name">${r.product_name || '(No title)'} ${badge}</div>
-      <div class="muted">${r.brand_guess || ''}</div>
-      <div class="muted">${r.platform} • ${cat}</div>
-      <div class="row" style="gap:8px; margin-top:6px">${disc}${rev}${bought}</div>
-    </div>
-    <div style="text-align:right">
-      <div class="price">${priceView(r.price)}</div>
-      <div class="muted" style="text-decoration:line-through">${r.mrp?priceView(r.mrp):''}</div>
-    </div>
-  </a>`;
+function brandFromName(name) {
+  if (!name) return null;
+  const m = (name.match(/^\s*([A-Za-z+]+)/) || [])[1];
+  return m || null;
 }
-
-function renderAmazonList(){
-  $('#countAmazon').textContent = `${filtered.length} items`;
-  $('#listAmazon').innerHTML = filtered.map(viewItem).join("");
-}
-
-/* ---------- Tables (second pane) ---------- */
-function renderTables() {
-  const groups = {
-    mobiles: [],
-    mobile_accessories: [],
-    laptops: [],
-    laptop_accessories: [],
-  };
-  for (const r of rows) {
-    if (groups[r.category]) groups[r.category].push(r);
+function modelFromName(name, brand_guess) {
+  if (!name) return '';
+  if (brand_guess) {
+    const re = new RegExp('^\\s*' + brand_guess.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*', 'i');
+    return name.replace(re, '').trim();
   }
-  const sortFn = (a,b) => {
-    const aSold = a.items_sold_month ?? -1;
-    const bSold = b.items_sold_month ?? -1;
-    if (aSold !== bSold) return bSold - aSold; // by items sold desc
-    const aRev = a.review_count ?? -1;
-    const bRev = b.review_count ?? -1;
-    if (aRev !== bRev) return bRev - aRev;     // tie-break by reviews
-    const aDisc = a.discount_percent ?? -1;
-    const bDisc = b.discount_percent ?? -1;
-    return bDisc - aDisc;                       // then by discount
-  };
-
-  Object.entries(groups).forEach(([cat, arr]) => {
-    const tbody = $(`#tbl_${cat} tbody`);
-    if (!tbody) return;
-    const top = arr.slice().sort(sortFn).slice(0, 20);
-    tbody.innerHTML = top.map((r, i) => `
-      <tr>
-        <td>${i+1}</td>
-        <td>${r.brand_guess || '—'}</td>
-        <td><a href="${r.product_url}" target="_blank" rel="noopener">${r.product_name || '—'}</a></td>
-        <td>${priceView(r.price)}</td>
-        <td>${pctView(r.discount_percent)}</td>
-        <td>${soldView(r.items_sold_month)}</td>
-      </tr>
-    `).join("");
-  });
+  const b = brandFromName(name);
+  if (b) return name.replace(new RegExp('^\\s*' + b + '\\s*', 'i'), '').trim();
+  return name;
 }
 
-/* ---------- Search + Sort + Filter ---------- */
-function currentFilterCat() {
-  const v = $('#categoryFilter')?.value || '';
-  return v;
+/* ---------- Rendering: First pane (active tab) ---------- */
+function card(r){
+  const ratingsTag = (r.rating!=null || r.review_count!=null)
+    ? `<span class="tag">${r.rating!=null?r.rating.toFixed(1):'–'} ★ • ${r.review_count!=null?r.review_count.toLocaleString('en-IN'):'–'}</span>` : '';
+  const boughtTag = (r.items_sold_month!=null || r.bought_past_month!=null)
+    ? `<span class="tag">${(r.items_sold_month ?? r.bought_past_month).toLocaleString('en-IN')} bought/mo</span>` : '';
+  const badge = (r.badge_best_seller || r.badge) ? `<span class="tag">${r.badge ? r.badge : 'Best seller'}</span>` : '';
+  return `
+    <a class="item" href="${r.product_url}" target="_blank" rel="noopener">
+      ${r.image_url ? `<img src="${r.image_url}" alt="">` : `<img alt="">`}
+      <div>
+        <div class="name">${r.product_name || '(No title)'}</div>
+        <div class="muted">${r.brand_guess || ''}</div>
+        <div class="row" style="gap:6px; margin-top:6px">${badge}${ratingsTag}${boughtTag}</div>
+      </div>
+      <div style="text-align:right">
+        <div class="price">${priceView(r.price)}</div>
+        <div class="muted" style="text-decoration:line-through">${r.mrp?priceView(r.mrp):''}</div>
+        <div class="muted">${r.discount_percent!=null ? `${r.discount_percent}% off` : ''}</div>
+      </div>
+    </a>
+  `;
 }
-function applySearchAndSort(){
+
+function renderActiveList() {
+  const src = rows.filter(r => r.category === activeCat || (activeCat==='custom' && r.category==null));
   const term = ($('#search').value||'').toLowerCase();
-  const cat = currentFilterCat();
-  filtered = rows.filter(r => (!cat || r.category===cat) && (!term || (r.product_name||'').toLowerCase().includes(term)));
-  renderAmazonList();
+  viewRows = src.filter(r => !term || (r.product_name||'').toLowerCase().includes(term));
+  $('#countActive').textContent = `${viewRows.length} items`;
+  $('#listActive').innerHTML = viewRows.map(card).join('');
 }
-function sortBy(mode){
+
+/* ---------- Sorting for first pane ---------- */
+function sortActive(mode){
   const key = {
     discount: (r)=> (r.discount_percent==null ? -Infinity : r.discount_percent),
     lowest:   (r)=> (r.price==null ? Infinity : r.price) * -1, // reverse later
@@ -123,11 +84,66 @@ function sortBy(mode){
     reviews:  (r)=> (r.review_count==null ? -Infinity : r.review_count),
   }[mode];
 
-  const arr = filtered.slice();
-  arr.sort((a,b)=> (key(b)-key(a))); // desc
-  if(mode==='lowest'){ arr.reverse(); } // asc
-  filtered = arr;
-  renderAmazonList();
+  const arr = viewRows.slice().sort((a,b)=> key(b)-key(a));
+  if (mode==='lowest') arr.reverse();
+  viewRows = arr;
+  $('#listActive').innerHTML = viewRows.map(card).join('');
+}
+
+/* ---------- Rendering: Second pane tables ---------- */
+function buildTable(rowsForCat, tableId, countId) {
+  const tbl = $(tableId);
+  const countEl = $(countId);
+  if (!tbl) return;
+
+  // sort by items_sold_month / bought_past_month desc, fallback to review_count desc
+  const sorted = rowsForCat.slice().sort((a,b)=>{
+    const A = (a.items_sold_month ?? a.bought_past_month ?? -1);
+    const B = (b.items_sold_month ?? b.bought_past_month ?? -1);
+    if (B!==A) return B - A;
+    const Ar = (a.review_count!=null ? a.review_count : -1);
+    const Br = (b.review_count!=null ? b.review_count : -1);
+    return Br - Ar;
+  }).slice(0, 10); // top 10
+
+  tbl.innerHTML = `
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Brand</th>
+        <th>Model</th>
+        <th>Price</th>
+        <th>Discount</th>
+        <th>Bought (month)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${sorted.map((r, i)=>`
+        <tr>
+          <td>${i+1}</td>
+          <td>${r.brand_guess || brandFromName(r.product_name) || '—'}</td>
+          <td><a href="${r.product_url}" target="_blank" rel="noopener">${modelFromName(r.product_name, r.brand_guess)}</a></td>
+          <td>${priceView(r.price)}</td>
+          <td>${discountView(r.discount_percent)}</td>
+          <td>${boughtView(r.items_sold_month ?? r.bought_past_month)}</td>
+        </tr>
+      `).join('')}
+    </tbody>
+  `;
+  if (countEl) countEl.textContent = `${rowsForCat.length} items`;
+}
+
+function renderTables(){
+  const byCat = {
+    mobiles: rows.filter(r=>r.category==='mobiles'),
+    mobile_accessories: rows.filter(r=>r.category==='mobile_accessories'),
+    laptops: rows.filter(r=>r.category==='laptops'),
+    laptop_accessories: rows.filter(r=>r.category==='laptop_accessories'),
+  };
+  buildTable(byCat.mobiles, '#tbl_mobiles', '#count_mobiles');
+  buildTable(byCat.mobile_accessories, '#tbl_mobile_accessories', '#count_mobile_accessories');
+  buildTable(byCat.laptops, '#tbl_laptops', '#count_laptops');
+  buildTable(byCat.laptop_accessories, '#tbl_laptop_accessories', '#count_laptop_accessories');
 }
 
 /* ---------- Debug panel ---------- */
@@ -149,74 +165,106 @@ function showDebug(lines, shot) {
   }
 }
 
-/* ---------- Scrape trigger ---------- */
+/* ---------- Fetch ---------- */
+function getNumberOrNull(el, min, max) {
+  const v = (el?.value || '').trim();
+  if (!v) return null;
+  const n = Number(v);
+  if (!isFinite(n)) return null;
+  if (min!=null && n < min) return min;
+  if (max!=null && n > max) return max;
+  return Math.floor(n);
+}
+
 async function run() {
-  const amazon = normalizeInputUrl($('#amazonUrl')?.value);
+  const custom = normalizeInputUrl($('#amazonUrl')?.value);
+
+  // Advanced fields
+  const timeoutMs   = getNumberOrNull($('#advTimeoutMs'), 3000, 60000);
+  const hardLimitMs = getNumberOrNull($('#advHardLimitMs'), 8000, 90000);
+  const perList     = getNumberOrNull($('#advPerListLimit'), 6, 40);
+  const preset      = ($('#advPreset')?.value || 'all');
 
   const btn = $('#run');
-  btn.disabled = true; btn.textContent = 'Scraping...';
+  btn.disabled = true; btn.textContent = 'Fetching…';
   showDebug(); // hide previous
-
   try {
     const fnUrl = new URL('/.netlify/functions/scrape', window.location.origin);
 
-    // If a custom URL is provided, use it; else fetch all four presets
-    if (amazon) {
-      fnUrl.searchParams.set('amazon_url', amazon);
-    } else {
-      fnUrl.searchParams.set('preset', '1');
-    }
+    // pages (existing control)
+    const pages = String(Math.max(1, Math.min(3, parseInt(($('#maxPages')?.value || '1'), 10) || 1)));
+    fnUrl.searchParams.set('max_pages', pages);
 
-    fnUrl.searchParams.set('fast', '1');
-    fnUrl.searchParams.set('max_pages', String(Math.max(1, Math.min(3, parseInt(($('#maxPages')?.value || '1'), 10) || 1))));
+    // debug flags
     if ($('#dbg')?.checked) fnUrl.searchParams.set('debug', '1');
     if ($('#dbgshot')?.checked) fnUrl.searchParams.set('debug_shot', '1');
 
-    const res = await fetch(fnUrl.toString(), { method: 'GET' });
-    const data = await res.json().catch(() => ({}));
+    // advanced values (only send if provided)
+    if (timeoutMs!=null)   fnUrl.searchParams.set('timeout_ms', String(timeoutMs));
+    if (hardLimitMs!=null) fnUrl.searchParams.set('hard_limit_ms', String(hardLimitMs));
+    if (perList!=null)     fnUrl.searchParams.set('per_list_limit', String(perList));
 
-    if (data && (data.debug || data.debug_screenshot)) {
-      showDebug(data.debug, data.debug_screenshot);
+    // routing: custom URL or presets
+    if (custom) {
+      fnUrl.searchParams.set('amazon_url', custom);
+    } else {
+      fnUrl.searchParams.set('preset', preset || 'all'); // all or single category
     }
 
+    const res = await fetch(fnUrl.toString(), { method: 'GET' });
+    const data = await res.json().catch(()=> ({}));
+
+    if (data && (data.debug || data.debug_screenshot)) showDebug(data.debug, data.debug_screenshot);
     if (!res.ok || data.ok === false) {
       const msg = (data && (data.error || data.message)) || `HTTP ${res.status}`;
       throw new Error(msg);
     }
 
-    rows = (data.rows || []).filter(r => r.platform === 'amazon');
-    filtered = rows.slice();
+    rows = Array.isArray(data.rows) ? data.rows : [];
+    // If custom URL was used, mark it as a temporary "custom" category for the active list
+    if (custom) {
+      rows.forEach(r => { if (r.category == null) r.category = 'custom'; });
+      activeCat = 'custom';
+      // Deactivate tabs visually if custom run
+      $$('.tab').forEach(x => x.classList.remove('active'));
+    } else {
+      // if a specific preset (not 'all') was chosen, select its tab
+      if (preset && preset !== 'all') {
+        activeCat = preset;
+        $$('.tab').forEach(x => x.classList.toggle('active', x.dataset.cat === preset));
+      } else {
+        activeCat = 'mobiles';
+        $$('.tab').forEach(x => x.classList.toggle('active', x.dataset.cat === 'mobiles'));
+      }
+    }
 
-    // Default filter chip: none (Show All)
-    $$('.chip').forEach(c => c.classList.remove('active'));
-    $(`.chip[data-cat=""]`)?.classList.add('active');
-    $('#categoryFilter').value = '';
-
-    applySearchAndSort();
+    // Render
+    renderActiveList();
     renderTables();
   } catch (err) {
-    console.error('Scrape failed:', err);
-    alert('Scrape failed: ' + (err?.message || err));
+    console.error('Fetch failed:', err);
+    alert('Fetch failed: ' + (err?.message || err));
   } finally {
-    btn.disabled = false; btn.textContent = 'Scrape';
+    btn.disabled = false; btn.textContent = 'Fetch';
   }
 }
 
-/* ---------- Event wiring ---------- */
+/* ---------- Events ---------- */
 document.addEventListener('DOMContentLoaded', () => {
   $('#run').addEventListener('click', run);
-  $('#search').addEventListener('input', applySearchAndSort);
-  $$('.pill').forEach(p => p.addEventListener('click', ()=> sortBy(p.dataset.sort)));
-  $('#categoryFilter').addEventListener('change', applySearchAndSort);
+  $('#search').addEventListener('input', renderActiveList);
 
-  // Quick category chips -> just set the dropdown + filter
-  $$('#categoryChips .chip').forEach(ch => {
-    ch.addEventListener('click', () => {
-      $$('#categoryChips .chip').forEach(c => c.classList.remove('active'));
-      ch.classList.add('active');
-      const cat = ch.dataset.cat || '';
-      $('#categoryFilter').value = cat;
-      applySearchAndSort();
+  // tabs
+  $$('.tab').forEach(t => {
+    t.addEventListener('click', () => {
+      if (t.dataset.cat === 'custom') return;
+      $$('.tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      activeCat = t.dataset.cat;
+      renderActiveList();
     });
   });
+
+  // sort pills
+  $$('.pill').forEach(p => p.addEventListener('click', ()=> sortActive(p.dataset.sort)));
 });
