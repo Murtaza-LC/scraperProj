@@ -313,18 +313,24 @@ module.exports.handler = async function (event) {
 
       if (site === "flipkart") {
         if (!flipkartUrl) continue;
-
-        // Attempt 1: desktop site, desktop UA
+      
+        let gotFlipkart = false;
         let pos = 0;
-        for (let p=1; p<=maxPages; p++) {
+      
+        // ----- Desktop attempt -----
+        for (let p = 1; p <= maxPages; p++) {
           if (timeLeft(deadline) < 1200) { DBG.d("deadline near, stop flipkart"); break; }
           const url = pageWithParam(flipkartUrl, p);
           const nav = await gotoWithRetries(page, url, "a[href*='/p/']", BASE_OPTS.timeoutMs, DBG, { detectCaptchaTitle: true });
-          if (nav.captcha) { captcha.flipkart = true; break; }
+          if (nav.captcha) {
+            captcha.flipkart = true;
+            DBG.d("flipkart: captcha on desktop — will try mobile fallback");
+            break; // break desktop loop; we'll try mobile next
+          }
           if (!nav.ok) {
-            // Fallback to container selector
+            // Try a grid container fallback once
             const nav2 = await gotoWithRetries(page, url, "div._1YokD2, div._2kHMtA, div.gUuXy-, div.y0S0Pe", BASE_OPTS.timeoutMs, DBG, { detectCaptchaTitle: true });
-            if (nav2.captcha) { captcha.flipkart = true; break; }
+            if (nav2.captcha) { captcha.flipkart = true; DBG.d("flipkart: captcha (grid fallback) — will try mobile"); break; }
             if (!nav2.ok) break;
           }
           if (shotEnabled && !shotBase64) {
@@ -334,30 +340,45 @@ module.exports.handler = async function (event) {
           await autoScroll(page, BASE_OPTS.scrollSteps, BASE_OPTS.scrollPauseMs);
           const [chunk, newPos] = await extractFlipkartList(page, flipkartUrl, pos, BASE_OPTS, perSiteLimit, DBG);
           pos = newPos; out.push(...chunk);
+          if (chunk.length) gotFlipkart = true;
         }
-
-        // If we got nothing and not already flagged captcha, try mobile fallback quickly
-        if (!captcha.flipkart && !out.some(r => r.platform === "flipkart") && timeLeft(deadline) > 2000) {
+      
+        // ----- Mobile fallback (even if captcha was detected on desktop) -----
+        const stillNeedMobile = !gotFlipkart && timeLeft(deadline) > 2000;
+        if (stillNeedMobile) {
           DBG.d("flipkart: trying mobile fallback");
           const mob = await browser.newPage();
           await mob.setUserAgent(UA_MOBILE);
           await hardenPage(mob, { mobile:true });
           await mob.setExtraHTTPHeaders({ "accept-language":"en-IN,en;q=0.9", "referer":"https://www.google.com/" });
-
+      
           const murl = flipToMobile(flipkartUrl);
-          const navM = await gotoWithRetries(mob, murl, "a[href*='/p/']", 6000, DBG, { detectCaptchaTitle: true });
-          if (!navM.ok && !navM.captcha) {
-            // try grid fallback once
-            await gotoWithRetries(mob, murl, "div._1YokD2, div._2kHMtA, div.gUuXy-, div.y0S0Pe", 6000, DBG, { detectCaptchaTitle: true });
+      
+          // First try anchors, then grid; both with captcha detection
+          let okM = false, capM = false;
+          let rv = await gotoWithRetries(mob, murl, "a[href*='/p/'], a[href*='/product/']", 6000, DBG, { detectCaptchaTitle: true });
+          if (rv.captcha) { capM = true; }
+          okM = rv.ok;
+      
+          if (!okM && !capM) {
+            rv = await gotoWithRetries(mob, murl, "div._1YokD2, div._2kHMtA, div.gUuXy-, div.y0S0Pe", 6000, DBG, { detectCaptchaTitle: true });
+            if (rv.captcha) capM = true;
+            okM = rv.ok;
           }
-          if (navM.captcha) captcha.flipkart = true;
-
-          if (!captcha.flipkart) {
+      
+          if (!capM && okM) {
             await randWait(80,160);
             await autoScroll(mob, 2, 120);
-            const [chunkM] = await extractFlipkartList(mob, murl, 0, { ...BASE_OPTS, timeoutMs: 6000 }, 10, DBG);
+            const [chunkM] = await extractFlipkartList(
+              mob, murl, 0, { ...BASE_OPTS, timeoutMs: 6000 }, 10, DBG
+            );
+            if (chunkM.length) gotFlipkart = true;
             out.push(...chunkM);
+          } else if (capM) {
+            captcha.flipkart = true;
+            DBG.d("flipkart: captcha on mobile fallback");
           }
+      
           await mob.close();
         }
       }
