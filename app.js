@@ -5,10 +5,17 @@ const $$ = (s, r=document)=>Array.from(r.querySelectorAll(s));
 /* ---------- App state ---------- */
 let rows = [];      // unified rows from backend
 let filtered = [];  // after search/sort
-let matches = [];   // matched pairs
+
+/* ---------- Constants ---------- */
+const CATEGORY_LABELS = {
+  mobiles: "Trending Mobile Phones",
+  mobile_accessories: "Trending Mobile Phone Accessories",
+  laptops: "Trending Laptops",
+  laptop_accessories: "Trending Laptop Accessories",
+};
 
 /* ---------- URL normalization ---------- */
-function normalizeInputUrl(raw, platform) {
+function normalizeInputUrl(raw) {
   if (!raw) return null;
   let s = String(raw).trim();
   if (!s) return null;
@@ -16,47 +23,34 @@ function normalizeInputUrl(raw, platform) {
   try {
     const u = new URL(s);
     const host = u.host.toLowerCase();
-    if (platform === 'amazon' && !host.includes('amazon.')) return null;
-    if (platform === 'flipkart' && !host.includes('flipkart.com')) return null;
+    if (!host.includes('amazon.')) return null;
     return u.toString();
   } catch {
     return null;
   }
 }
 
-/* ---------- Fuzzy matching for pairs ---------- */
-function normName(s){
-  if(!s) return "";
-  return s.toLowerCase()
-    .replace(/[^a-z0-9\s\+]/g," ")
-    .replace(/\b(5g|4g|smartphone|phone|android|mobile|gb|ram|rom)\b/g," ")
-    .replace(/\s+/g," ")
-    .trim();
-}
-function scoreMatch(a,b){
-  const A = new Set(normName(a).split(" ").filter(Boolean));
-  const B = new Set(normName(b).split(" ").filter(Boolean));
-  if(!A.size || !B.size) return 0;
-  let inter = 0;
-  for(const t of A) if(B.has(t)) inter++;
-  return inter / Math.min(A.size, B.size);
-}
-
 /* ---------- Rendering ---------- */
 function priceView(p){ return p!=null ? `₹${Number(p).toLocaleString('en-IN')}` : "—"; }
+function pctView(p){ return p!=null ? `${p}%` : "—"; }
+function soldView(n){ return n!=null ? n.toLocaleString('en-IN') : "—"; }
 
 function viewItem(r){
   const img = r.image_url ? `<img src="${r.image_url}" alt="">` : `<img alt="">`;
   const disc = r.discount_percent!=null ? `<span class="tag">${r.discount_percent}% off</span>` : ``;
   const rev  = r.review_count!=null ? `<span class="tag">${r.review_count} reviews</span>` : ``;
+  const bought = (r.items_sold_month!=null) ? `<span class="tag ok">${r.items_sold_month.toLocaleString('en-IN')} bought/mo</span>` : ``;
+  const badge = r.badge_best_seller ? `<span class="badge">Best seller</span>` : ``;
+  const cat = r.category ? `<span class="muted">${CATEGORY_LABELS[r.category]||r.category}</span>` : ``;
+
   return `
   <a class="item" href="${r.product_url}" target="_blank" rel="noopener">
     ${img}
     <div>
-      <div class="name">${r.product_name || '(No title)'}</div>
+      <div class="name">${r.product_name || '(No title)'} ${badge}</div>
       <div class="muted">${r.brand_guess || ''}</div>
-      <div class="muted">${r.platform}</div>
-      <div class="row" style="gap:8px; margin-top:6px">${disc}${rev}</div>
+      <div class="muted">${r.platform} • ${cat}</div>
+      <div class="row" style="gap:8px; margin-top:6px">${disc}${rev}${bought}</div>
     </div>
     <div style="text-align:right">
       <div class="price">${priceView(r.price)}</div>
@@ -65,81 +59,62 @@ function viewItem(r){
   </a>`;
 }
 
-function renderLists(){
-  const amz = filtered.filter(r=>r.platform==="amazon");
-  const flk = filtered.filter(r=>r.platform==="flipkart");
-  $('#countAmazon').textContent = `${amz.length} items`;
-  $('#countFlipkart').textContent = `${flk.length} items`;
-  $('#listAmazon').innerHTML = amz.map(viewItem).join("");
-  $('#listFlipkart').innerHTML = flk.map(viewItem).join("");
+function renderAmazonList(){
+  $('#countAmazon').textContent = `${filtered.length} items`;
+  $('#listAmazon').innerHTML = filtered.map(viewItem).join("");
 }
 
-function viewMatch(pair){
-  const a = pair.amazon, f = pair.flipkart;
-  const delta = (a.price!=null && f.price!=null) ? (f.price - a.price) : null;
-  const deltaTxt = delta==null ? '' :
-    `<span class="${delta<0?'ok':'warn'}">${delta<0?'↓':'↑'} ₹${Math.abs(delta).toLocaleString('en-IN')}</span>`;
-  return `
-  <div class="compare card">
-    <div>
-      <div class="row" style="justify-content:space-between"><strong>Amazon</strong><a class="tag" href="${a.product_url}" target="_blank">Open</a></div>
-      <div class="name">${a.product_name}</div>
-      <div class="muted">${a.brand_guess||''}</div>
-      <div class="price">${priceView(a.price)} <span class="muted" style="text-decoration:line-through">${a.mrp?priceView(a.mrp):''}</span></div>
-      <div class="muted">${a.discount_percent!=null? a.discount_percent + '% off' : ''}</div>
-    </div>
-    <div>
-      <div class="row" style="justify-content:space-between"><strong>Flipkart</strong><a class="tag" href="${f.product_url}" target="_blank">Open</a></div>
-      <div class="name">${f.product_name}</div>
-      <div class="muted">${f.brand_guess||''}</div>
-      <div class="price">${priceView(f.price)} <span class="muted" style="text-decoration:line-through">${f.mrp?priceView(f.mrp):''}</span></div>
-      <div class="muted">${f.discount_percent!=null? f.discount_percent + '% off' : ''}</div>
-    </div>
-    <div class="row" style="grid-column:1/-1; justify-content:flex-end; gap:8px">
-      ${deltaTxt}
-    </div>
-  </div>`;
+/* ---------- Tables (second pane) ---------- */
+function renderTables() {
+  const groups = {
+    mobiles: [],
+    mobile_accessories: [],
+    laptops: [],
+    laptop_accessories: [],
+  };
+  for (const r of rows) {
+    if (groups[r.category]) groups[r.category].push(r);
+  }
+  const sortFn = (a,b) => {
+    const aSold = a.items_sold_month ?? -1;
+    const bSold = b.items_sold_month ?? -1;
+    if (aSold !== bSold) return bSold - aSold; // by items sold desc
+    const aRev = a.review_count ?? -1;
+    const bRev = b.review_count ?? -1;
+    if (aRev !== bRev) return bRev - aRev;     // tie-break by reviews
+    const aDisc = a.discount_percent ?? -1;
+    const bDisc = b.discount_percent ?? -1;
+    return bDisc - aDisc;                       // then by discount
+  };
+
+  Object.entries(groups).forEach(([cat, arr]) => {
+    const tbody = $(`#tbl_${cat} tbody`);
+    if (!tbody) return;
+    const top = arr.slice().sort(sortFn).slice(0, 20);
+    tbody.innerHTML = top.map((r, i) => `
+      <tr>
+        <td>${i+1}</td>
+        <td>${r.brand_guess || '—'}</td>
+        <td><a href="${r.product_url}" target="_blank" rel="noopener">${r.product_name || '—'}</a></td>
+        <td>${priceView(r.price)}</td>
+        <td>${pctView(r.discount_percent)}</td>
+        <td>${soldView(r.items_sold_month)}</td>
+      </tr>
+    `).join("");
+  });
 }
 
-function computeMatches(){
-  const A = filtered.filter(r=>r.platform==="amazon");
-  const F = filtered.filter(r=>r.platform==="flipkart");
-  const out = [];
-  const byBrand = new Map();
-  for(const f of F){
-    const key = (f.brand_guess||'').toLowerCase();
-    if(!byBrand.has(key)) byBrand.set(key, []);
-    byBrand.get(key).push(f);
-  }
-  for(const a of A){
-    const candidates = (byBrand.get((a.brand_guess||'').toLowerCase())||F);
-    let best=null, bestScore=0;
-    for(const f of candidates){
-      const s = scoreMatch(a.product_name||'', f.product_name||'');
-      if(s>bestScore){ bestScore=s; best={amazon:a, flipkart:f}; }
-    }
-    if(best && bestScore>=0.55){
-      out.push(best);
-    }
-  }
-  const seenF = new Set(); const dedup=[];
-  for(const m of out){
-    if(seenF.has(m.flipkart.product_url)) continue;
-    seenF.add(m.flipkart.product_url); dedup.push(m);
-  }
-  matches = dedup;
-  $('#matchCount').textContent = `${matches.length} pairs`;
-  $('#matches').innerHTML = matches.map(viewMatch).join("");
+/* ---------- Search + Sort + Filter ---------- */
+function currentFilterCat() {
+  const v = $('#categoryFilter')?.value || '';
+  return v;
 }
-
-/* ---------- Search + Sort ---------- */
 function applySearchAndSort(){
   const term = ($('#search').value||'').toLowerCase();
-  filtered = rows.filter(r=> !term || (r.product_name||'').toLowerCase().includes(term));
-  renderLists();
-  computeMatches();
+  const cat = currentFilterCat();
+  filtered = rows.filter(r => (!cat || r.category===cat) && (!term || (r.product_name||'').toLowerCase().includes(term)));
+  renderAmazonList();
 }
-
 function sortBy(mode){
   const key = {
     discount: (r)=> (r.discount_percent==null ? -Infinity : r.discount_percent),
@@ -148,17 +123,11 @@ function sortBy(mode){
     reviews:  (r)=> (r.review_count==null ? -Infinity : r.review_count),
   }[mode];
 
-  function sortPlatform(p){
-    const arr = filtered.filter(r=>r.platform===p);
-    arr.sort((a,b)=> (key(b)-key(a))); // desc
-    if(mode==='lowest'){ arr.reverse(); } // asc
-    return arr;
-  }
-  const amz = sortPlatform('amazon');
-  const flk = sortPlatform('flipkart');
-  filtered = amz.concat(flk);
-  renderLists();
-  computeMatches();
+  const arr = filtered.slice();
+  arr.sort((a,b)=> (key(b)-key(a))); // desc
+  if(mode==='lowest'){ arr.reverse(); } // asc
+  filtered = arr;
+  renderAmazonList();
 }
 
 /* ---------- Debug panel ---------- */
@@ -182,13 +151,7 @@ function showDebug(lines, shot) {
 
 /* ---------- Scrape trigger ---------- */
 async function run() {
-  const amazon = normalizeInputUrl($('#amazonUrl')?.value, 'amazon');
-  const flip   = normalizeInputUrl($('#flipkartUrl')?.value, 'flipkart');
-
-  if (!amazon && !flip) {
-    alert('Enter at least one valid listing URL (Amazon or Flipkart).');
-    return;
-  }
+  const amazon = normalizeInputUrl($('#amazonUrl')?.value);
 
   const btn = $('#run');
   btn.disabled = true; btn.textContent = 'Scraping...';
@@ -196,14 +159,19 @@ async function run() {
 
   try {
     const fnUrl = new URL('/.netlify/functions/scrape', window.location.origin);
-    if (amazon) fnUrl.searchParams.set('amazon_url', amazon);
-    if (flip)   fnUrl.searchParams.set('flipkart_url', flip);
+
+    // If a custom URL is provided, use it; else fetch all four presets
+    if (amazon) {
+      fnUrl.searchParams.set('amazon_url', amazon);
+    } else {
+      fnUrl.searchParams.set('preset', '1');
+    }
+
     fnUrl.searchParams.set('fast', '1');
     fnUrl.searchParams.set('max_pages', String(Math.max(1, Math.min(3, parseInt(($('#maxPages')?.value || '1'), 10) || 1))));
     if ($('#dbg')?.checked) fnUrl.searchParams.set('debug', '1');
     if ($('#dbgshot')?.checked) fnUrl.searchParams.set('debug_shot', '1');
 
-    console.log('Calling:', fnUrl.toString());
     const res = await fetch(fnUrl.toString(), { method: 'GET' });
     const data = await res.json().catch(() => ({}));
 
@@ -216,9 +184,16 @@ async function run() {
       throw new Error(msg);
     }
 
-    rows = data.rows || [];
+    rows = (data.rows || []).filter(r => r.platform === 'amazon');
     filtered = rows.slice();
+
+    // Default filter chip: none (Show All)
+    $$('.chip').forEach(c => c.classList.remove('active'));
+    $(`.chip[data-cat=""]`)?.classList.add('active');
+    $('#categoryFilter').value = '';
+
     applySearchAndSort();
+    renderTables();
   } catch (err) {
     console.error('Scrape failed:', err);
     alert('Scrape failed: ' + (err?.message || err));
@@ -232,4 +207,16 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#run').addEventListener('click', run);
   $('#search').addEventListener('input', applySearchAndSort);
   $$('.pill').forEach(p => p.addEventListener('click', ()=> sortBy(p.dataset.sort)));
+  $('#categoryFilter').addEventListener('change', applySearchAndSort);
+
+  // Quick category chips -> just set the dropdown + filter
+  $$('#categoryChips .chip').forEach(ch => {
+    ch.addEventListener('click', () => {
+      $$('#categoryChips .chip').forEach(c => c.classList.remove('active'));
+      ch.classList.add('active');
+      const cat = ch.dataset.cat || '';
+      $('#categoryFilter').value = cat;
+      applySearchAndSort();
+    });
+  });
 });
