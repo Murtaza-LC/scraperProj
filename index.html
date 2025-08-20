@@ -3,55 +3,122 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Amazon ↔ Flipkart Comparator</title>
+  <title>Amazon Trending Tracker</title>
   <link rel="stylesheet" href="app.css">
+  <style>
+    /* Small additions for the new UI */
+    .chips { display:flex; gap:8px; flex-wrap:wrap; }
+    .chip { padding:6px 10px; border:1px solid #ddd; border-radius:999px; cursor:pointer; }
+    .chip.active { background:#111; color:#fff; border-color:#111; }
+    .subhead { color:#666; font-size:13px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; }
+    th { background:#fafafa; position:sticky; top:0; z-index:1; }
+    .muted { color:#777; }
+    .badge { display:inline-block; font-size:12px; padding:2px 6px; border-radius:4px; background:#f2f2f2; margin-left:6px; }
+    .ok { color: #088C5E; }
+  </style>
 </head>
 <body>
 <header>
   <div class="container nav">
-    <h1>Amazon ↔ Flipkart Comparator</h1>
-    <div class="row" style="width:100%">
-      <input id="amazonUrl" class="stretch" placeholder="Amazon listing URL (e.g., https://www.amazon.in/s?k=trending+mobile+phones)"/>
-      <input id="flipkartUrl" class="stretch" placeholder="Flipkart listing URL (e.g., https://www.flipkart.com/search?q=trending+mobile+phones)"/>
+    <h1>Amazon Trending Tracker</h1>
+    <div class="row" style="width:100%; gap:8px; align-items:center; flex-wrap:wrap">
+      <input id="amazonUrl" class="stretch" placeholder="(Optional) Custom Amazon listing URL, e.g. https://www.amazon.in/s?k=trending+mobile+phones"/>
       <select id="maxPages">
         <option value="1">Pages: 1</option>
         <option value="2">Pages: 2</option>
         <option value="3">Pages: 3</option>
       </select>
-      <label class="row" style="gap:6px"><input id="pdp" type="checkbox"/> Enrich PDP</label>
       <button id="run" class="btn">Scrape</button>
       <label class="inline"><input type="checkbox" id="dbg"> Debug</label>
       <label class="inline"><input type="checkbox" id="dbgshot"> Screenshot</label>
+    </div>
+    <div class="subhead" style="margin-top:6px">
+      Tip: Leave the custom URL empty and click “Scrape” to fetch all four built‑in categories.
     </div>
   </div>
 </header>
 
 <main class="container">
+  <!-- FIRST PANE: Amazon results with category chips / filter -->
   <section class="card" style="margin-bottom:16px">
-    <div class="toolbar">
+    <div class="toolbar" style="gap:8px; flex-wrap:wrap">
       <span class="pill" data-sort="discount">Most discount</span>
       <span class="pill" data-sort="lowest">Lowest price</span>
       <span class="pill" data-sort="highest">Highest price</span>
       <span class="pill" data-sort="reviews">Most reviews</span>
-      <input id="search" class="stretch" placeholder="Search products (e.g., 5G, 256GB, Samsung)"/>
+
+      <select id="categoryFilter">
+        <option value="">All Categories</option>
+        <option value="mobiles">Trending Mobile Phones</option>
+        <option value="mobile_accessories">Trending Mobile Phone Accessories</option>
+        <option value="laptops">Trending Laptops</option>
+        <option value="laptop_accessories">Trending Laptop Accessories</option>
+      </select>
+      <input id="search" class="stretch" placeholder="Search products (e.g., Samsung, 5G, 16GB RAM)"/>
     </div>
   </section>
 
   <section class="card" style="margin-bottom:16px">
-    <div class="head"><strong>Matches (Amazon ↔ Flipkart)</strong><span id="matchCount" class="muted"></span></div>
-    <div id="matches" class="match-grid"></div>
+    <div class="head">
+      <strong>Amazon Results</strong>
+      <span id="countAmazon" class="muted"></span>
+    </div>
+    <div class="chips" id="categoryChips" style="margin-bottom:12px">
+      <div class="chip" data-cat="mobiles">Trending Mobile Phones</div>
+      <div class="chip" data-cat="mobile_accessories">Trending Mobile Phone Accessories</div>
+      <div class="chip" data-cat="laptops">Trending Laptops</div>
+      <div class="chip" data-cat="laptop_accessories">Trending Laptop Accessories</div>
+      <div class="chip" data-cat="">Show All</div>
+    </div>
+    <div id="listAmazon" class="list"></div>
   </section>
 
-  <div class="grid">
-    <section class="card">
-      <div class="head"><strong>Amazon</strong><span id="countAmazon" class="muted"></span></div>
-      <div id="listAmazon" class="list"></div>
-    </section>
-    <section class="card">
-      <div class="head"><strong>Flipkart</strong><span id="countFlipkart" class="muted"></span></div>
-      <div id="listFlipkart" class="list"></div>
-    </section>
-  </div>
+  <!-- SECOND PANE: Best sellers tables per category -->
+  <section class="card">
+    <div class="head"><strong>Best Sellers (by “bought in past month”, then reviews)</strong></div>
+
+    <h3 style="margin-top:12px">Mobile Phones</h3>
+    <div class="table-wrap" style="overflow:auto; max-height:360px">
+      <table id="tbl_mobiles">
+        <thead><tr>
+          <th>#</th><th>Brand</th><th>Model</th><th>Price</th><th>Discount</th><th>Items Sold</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <h3 style="margin-top:18px">Mobile Phone Accessories</h3>
+    <div class="table-wrap" style="overflow:auto; max-height:360px">
+      <table id="tbl_mobile_accessories">
+        <thead><tr>
+          <th>#</th><th>Brand</th><th>Model</th><th>Price</th><th>Discount</th><th>Items Sold</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <h3 style="margin-top:18px">Laptops</h3>
+    <div class="table-wrap" style="overflow:auto; max-height:360px">
+      <table id="tbl_laptops">
+        <thead><tr>
+          <th>#</th><th>Brand</th><th>Model</th><th>Price</th><th>Discount</th><th>Items Sold</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <h3 style="margin-top:18px">Laptop Accessories</h3>
+    <div class="table-wrap" style="overflow:auto; max-height:360px">
+      <table id="tbl_laptop_accessories">
+        <thead><tr>
+          <th>#</th><th>Brand</th><th>Model</th><th>Price</th><th>Discount</th><th>Items Sold</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
 
   <pre id="debugOut" class="debug-out" style="display:none;"></pre>
 </main>
